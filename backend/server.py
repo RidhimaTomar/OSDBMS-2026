@@ -154,7 +154,8 @@ class Handler(BaseHTTPRequestHandler):
             super().log_message(fmt, *args)
 
 if __name__ == "__main__":
+    print("Initializing database...", flush=True)
     init_db()
-    print(" CampusSync running on port 8000 ")
+    print(f"CampusSync running on port {PORT}", flush=True)
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     server.serve_forever()
