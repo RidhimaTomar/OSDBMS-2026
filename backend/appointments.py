@@ -1,16 +1,15 @@
 import sqlite3
 import threading
 from database import get_connection
+from notifications import notify
 
 booking_lock = threading.Lock()
 
 DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri"]
 TIME_SLOTS = ["09:00", "10:00", "11:00", "12:00", "14:00", "15:00", "16:00"]
-ACTIVE = "('Pending', 'Accepted', 'Rescheduled')"   # statuses that occupy a slot
-
+ACTIVE = "('Pending', 'Accepted', 'Rescheduled')"
 
 def slot_problem(con, faculty_id, day, time_slot, ignore_id=None):
-    """Return a message if the slot cannot be used, otherwise None."""
     if day not in DAYS or time_slot not in TIME_SLOTS:
         return "Invalid day or time slot"
 
@@ -30,6 +29,23 @@ def slot_problem(con, faculty_id, day, time_slot, ignore_id=None):
 
     return None
 
+def when(day, time_slot):
+    return f"{day} {time_slot}"
+
+def appt_info(con, appointment_id):
+    return con.execute("""
+        SELECT a.*, s.name AS student, f.name AS faculty
+        FROM appointments a
+        JOIN users s ON a.student_id = s.user_id
+        JOIN users f ON a.faculty_id = f.user_id
+        WHERE a.appointment_id=?
+    """, (appointment_id,)).fetchone()
+
+def close_open_requests(con, appointment_id, new_status):
+    con.execute("""
+        UPDATE reschedule_requests SET status=?
+        WHERE appointment_id=? AND status='Pending'
+    """, (new_status, appointment_id))
 
 def book_appointment(data):
     try:
@@ -42,8 +58,6 @@ def book_appointment(data):
 
     topic = (data.get("topic") or "").strip()
 
-    # Critical section:
-    # only one thread should check and book a slot at a time.
     with booking_lock:
         con = get_connection()
 
@@ -52,17 +66,22 @@ def book_appointment(data):
             if problem:
                 return {"success": False, "message": problem}
 
-            con.execute("""
+            cur = con.execute("""
                 INSERT INTO appointments
                 (student_id, faculty_id, day, time_slot, topic)
                 VALUES (?, ?, ?, ?, ?)
             """, (student_id, faculty_id, day, time_slot, topic))
 
+            info = appt_info(con, cur.lastrowid)
+            notify(con, faculty_id, "booking",
+                   f"{info['student']} requested a meeting on {when(day, time_slot)}"
+                   + (f" - {topic}" if topic else ""), cur.lastrowid)
+
             con.commit()
             return {"success": True, "message": "Request sent to faculty"}
 
         except sqlite3.IntegrityError:
-            # Database constraint is the last line of defence against double booking.
+
             con.rollback()
             return {"success": False, "message": "Appointment slot already booked"}
 
@@ -73,16 +92,19 @@ def book_appointment(data):
         finally:
             con.close()
 
-
 def get_appointments(params=None):
     params = params or {}
     sql = """
         SELECT a.appointment_id, a.student_id, a.faculty_id,
                s.name AS student, f.name AS faculty,
-               a.day, a.time_slot, a.topic, a.status
+               a.day, a.time_slot, a.topic, a.status,
+               r.request_id AS req_id, r.new_day AS req_day,
+               r.new_time_slot AS req_time, r.reason AS req_reason
         FROM appointments a
         JOIN users s ON a.student_id = s.user_id
         JOIN users f ON a.faculty_id = f.user_id
+        LEFT JOIN reschedule_requests r
+               ON r.appointment_id = a.appointment_id AND r.status = 'Pending'
         WHERE 1=1
     """
     args = []
@@ -100,9 +122,7 @@ def get_appointments(params=None):
 
     return [dict(row) for row in rows]
 
-
 def get_availability(params):
-    """Free slots of one faculty for the whole week (no class, no active booking)."""
     faculty_id = params.get("faculty_id")
 
     con = get_connection()
@@ -120,7 +140,6 @@ def get_availability(params):
         "slots": {d: [t for t in TIME_SLOTS if (d, t) not in busy] for d in DAYS}
     }
 
-
 def respond_appointment(data):
     action = data.get("action")
 
@@ -129,19 +148,24 @@ def respond_appointment(data):
 
     with booking_lock:
         con = get_connection()
-        cur = con.execute("""
-            UPDATE appointments SET status=?
-            WHERE appointment_id=? AND faculty_id=? AND status='Pending'
-        """, (action, data.get("appointment_id"), data.get("faculty_id")))
-        con.commit()
-        changed = cur.rowcount
-        con.close()
+        try:
+            cur = con.execute("""
+                UPDATE appointments SET status=?
+                WHERE appointment_id=? AND faculty_id=? AND status='Pending'
+            """, (action, data.get("appointment_id"), data.get("faculty_id")))
 
-    if not changed:
-        return {"success": False, "message": "Request not found or already handled"}
+            if not cur.rowcount:
+                return {"success": False, "message": "Request not found or already handled"}
+
+            info = appt_info(con, data.get("appointment_id"))
+            notify(con, info["student_id"], action.lower(),
+                   f"{info['faculty']} {action.lower()} your meeting on "
+                   f"{when(info['day'], info['time_slot'])}", info["appointment_id"])
+            con.commit()
+        finally:
+            con.close()
 
     return {"success": True, "message": "Booking " + action.lower()}
-
 
 def reschedule_appointment(data):
     appointment_id = data.get("appointment_id")
@@ -159,6 +183,10 @@ def reschedule_appointment(data):
             if row is None:
                 return {"success": False, "message": "Appointment not found"}
 
+            before = appt_info(con, appointment_id)
+            if (before["day"], before["time_slot"]) == (data.get("day"), data.get("time_slot")):
+                return {"success": False, "message": "Booking is already at this time"}
+
             problem = slot_problem(con, faculty_id, data.get("day"),
                                    data.get("time_slot"), ignore_id=appointment_id)
             if problem:
@@ -170,6 +198,13 @@ def reschedule_appointment(data):
                 WHERE appointment_id=?
             """, (data["day"], data["time_slot"], appointment_id))
 
+            close_open_requests(con, appointment_id, "Declined")
+
+            notify(con, before["student_id"], "rescheduled",
+                   f"{before['faculty']} moved your meeting from "
+                   f"{when(before['day'], before['time_slot'])} to "
+                   f"{when(data['day'], data['time_slot'])}", appointment_id)
+
             con.commit()
             return {"success": True, "message": "Booking rescheduled"}
 
@@ -180,22 +215,30 @@ def reschedule_appointment(data):
         finally:
             con.close()
 
-
 def cancel_appointment(data):
+    uid = data.get("user_id")
     con = get_connection()
 
-    cur = con.execute("""
-        UPDATE appointments
-        SET status='Cancelled'
-        WHERE appointment_id=? AND (student_id=? OR faculty_id=?)
-        AND status IN """ + ACTIVE,
-        (data.get("appointment_id"), data.get("user_id"), data.get("user_id")))
+    try:
+        cur = con.execute("""
+            UPDATE appointments
+            SET status='Cancelled'
+            WHERE appointment_id=? AND (student_id=? OR faculty_id=?)
+            AND status IN """ + ACTIVE,
+            (data.get("appointment_id"), uid, uid))
 
-    con.commit()
-    changed = cur.rowcount
-    con.close()
+        if not cur.rowcount:
+            return {"success": False, "message": "Appointment cannot be cancelled"}
 
-    if not changed:
-        return {"success": False, "message": "Appointment cannot be cancelled"}
+        info = appt_info(con, data.get("appointment_id"))
+        close_open_requests(con, info["appointment_id"], "Withdrawn")
 
-    return {"success": True, "message": "Appointment cancelled"}
+        by_student = (uid == info["student_id"])
+        notify(con, info["faculty_id"] if by_student else info["student_id"], "cancelled",
+               f"{info['student'] if by_student else info['faculty']} cancelled the meeting on "
+               f"{when(info['day'], info['time_slot'])}", info["appointment_id"])
+
+        con.commit()
+        return {"success": True, "message": "Appointment cancelled"}
+    finally:
+        con.close()
