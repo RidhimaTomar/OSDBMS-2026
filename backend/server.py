@@ -126,16 +126,20 @@ class Handler(BaseHTTPRequestHandler):
         self.cors()
         self.end_headers()
 
-    def do_GET(self):
-        try:
-            parsed = urlparse(self.path)
-            if parsed.path.startswith("/api/"):
-                query = {k: v[0] for k, v in parse_qs(parsed.query).items()}
-                self.handle_api(GET_ROUTES, query)
-            else:
-                self.send_static(parsed.path)
-        except Exception as e:
-            self.send_json({"success": False, "message": str(e)}, 500)
+      
+def do_GET(self):
+    try:
+        parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/"):
+            query = {k: v[0] for k, v in parse_qs(parsed.query).items()}
+            self.handle_api(GET_ROUTES, query)
+        else:
+            self.send_static(parsed.path)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        self.send_json({"success": False, "message": str(e)}, 500)
+
 
     def do_POST(self):
         try:
