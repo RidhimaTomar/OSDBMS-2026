@@ -24,7 +24,7 @@ from os_engine.memory import fifo, lru, optimal
 from os_engine.disk import disk_fcfs, sstf, scan
 
 HOST = "0.0.0.0"
-PORT = 8000
+PORT = int(os.environ.get("PORT", 8000))
 FRONTEND_DIR = os.path.realpath(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "frontend")
 )
