@@ -136,11 +136,8 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self.send_static(parsed.path)
         except Exception as e:
-            import traceback
-            traceback.print_exc()
             self.send_json({"success": False, "message": str(e)}, 500)
-
-
+            
     def do_POST(self):
         try:
             self.handle_api(POST_ROUTES, self.read_json())
