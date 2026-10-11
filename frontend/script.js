@@ -1,4 +1,4 @@
-const API = location.port === '8000' ? '' : 'http://127.0.0.1:8000';
+const API = '';
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
 const SLOTS = ['09:00', '10:00', '11:00', '12:00', '14:00', '15:00', '16:00'];
 const ACTIVE = ['Pending', 'Accepted', 'Rescheduled'];
