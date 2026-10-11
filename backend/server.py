@@ -12,6 +12,9 @@ from appointments import (
     book_appointment, get_appointments, cancel_appointment,
     get_availability, respond_appointment, reschedule_appointment
 )
+from reschedule import request_reschedule, respond_reschedule, withdraw_reschedule
+from notifications import get_notifications, mark_read
+from calendar_view import get_calendar
 from os_engine.fcfs import fcfs
 from os_engine.priority import priority_scheduling
 from os_engine.round_robin import round_robin
@@ -20,23 +23,22 @@ from os_engine.deadlock import deadlock_check
 from os_engine.memory import fifo, lru, optimal
 from os_engine.disk import disk_fcfs, sstf, scan
 
-
-HOST = "127.0.0.1"
+HOST = "0.0.0.0"
 PORT = 8000
 FRONTEND_DIR = os.path.realpath(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "frontend")
 )
 
-# GET routes receive the query string as a dict, e.g. /api/appointments?student_id=3
 GET_ROUTES = {
     "/api/admin/users": get_users,
     "/api/faculty": lambda q: get_faculty(),
     "/api/timetable": lambda q: get_timetable(),
     "/api/appointments": get_appointments,
     "/api/availability": get_availability,
+    "/api/notifications": get_notifications,
+    "/api/calendar": get_calendar,
 }
 
-# POST routes receive the JSON body.
 POST_ROUTES = {
     "/api/login": login,
     "/api/admin/users": add_user,
@@ -46,24 +48,23 @@ POST_ROUTES = {
     "/api/appointments/cancel": cancel_appointment,
     "/api/appointments/respond": respond_appointment,
     "/api/appointments/reschedule": reschedule_appointment,
+    "/api/appointments/reschedule-request": request_reschedule,
+    "/api/appointments/reschedule-respond": respond_reschedule,
+    "/api/appointments/reschedule-withdraw": withdraw_reschedule,
+    "/api/notifications/read": mark_read,
 
-    # CPU scheduling
     "/api/os/fcfs": lambda d: fcfs(d["burst_time"]),
     "/api/os/priority": lambda d: priority_scheduling(d["burst_time"], d["priority"]),
     "/api/os/round-robin": lambda d: round_robin(d["burst_time"], d["quantum"]),
 
-    # Synchronization
     "/api/os/synchronization": lambda d: try_booking(d["slot"]),
 
-    # Deadlock
     "/api/os/deadlock": lambda d: deadlock_check(d["allocation"], d["request"]),
 
-    # Page replacement
     "/api/os/memory/fifo": lambda d: fifo(d["pages"], d["frames"]),
     "/api/os/memory/lru": lambda d: lru(d["pages"], d["frames"]),
     "/api/os/memory/optimal": lambda d: optimal(d["pages"], d["frames"]),
 
-    # Disk scheduling
     "/api/os/disk/fcfs": lambda d: disk_fcfs(d["requests"], d["head"]),
     "/api/os/disk/sstf": lambda d: sstf(d["requests"], d["head"]),
     "/api/os/disk/scan": lambda d: scan(d["requests"], d["head"], d["disk_size"]),
@@ -73,7 +74,6 @@ DELETE_ROUTES = {
     "/api/admin/users": delete_user,
     "/api/timetable": delete_timetable,
 }
-
 
 class Handler(BaseHTTPRequestHandler):
 
@@ -98,10 +98,10 @@ class Handler(BaseHTTPRequestHandler):
         return json.loads(self.rfile.read(length).decode())
 
     def send_static(self, path):
-        # Serves the frontend folder so the whole app runs from one address.
+
         name = "index.html" if path == "/" else path.lstrip("/")
         full = os.path.realpath(os.path.join(FRONTEND_DIR, name))
-        
+
         if not full.startswith(FRONTEND_DIR) or not os.path.isfile(full):
             self.send_json({"success": False, "message": "Not found"}, 404)
             return
@@ -150,12 +150,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"success": False, "message": str(e)}, 500)
 
     def log_message(self, fmt, *args):
-        if "/api/" in (args[0] if args else ""):
             super().log_message(fmt, *args)
-
 
 if __name__ == "__main__":
     init_db()
-    print("CampusSync running at http://127.0.0.1:8000  (open this in your browser)")
+    print(" CampusSync running on port 8000 ")
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     server.serve_forever()
