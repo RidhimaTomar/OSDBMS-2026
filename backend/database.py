@@ -1,15 +1,14 @@
+import os
 import sqlite3
 from security import hash_password, is_hashed
 
-DB_NAME = "campus.db"
-
+DB_NAME = os.environ.get("CAMPUS_DB") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "campus.db")
 
 def get_connection():
     connection = sqlite3.connect(DB_NAME)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
     return connection
-
 
 def init_db():
     con = get_connection()
@@ -52,20 +51,55 @@ def init_db():
         )
     """)
 
-  
     cur.execute("""
         CREATE UNIQUE INDEX IF NOT EXISTS uq_active_slot
         ON appointments(faculty_id, day, time_slot)
         WHERE status IN ('Pending', 'Accepted', 'Rescheduled')
     """)
 
-   
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS reschedule_requests (
+            request_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            appointment_id INTEGER NOT NULL,
+            requested_by INTEGER NOT NULL,
+            new_day TEXT NOT NULL,
+            new_time_slot TEXT NOT NULL,
+            reason TEXT DEFAULT '',
+            status TEXT DEFAULT 'Pending',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (appointment_id) REFERENCES appointments(appointment_id),
+            FOREIGN KEY (requested_by) REFERENCES users(user_id)
+        )
+    """)
+
+    cur.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_open_reschedule
+        ON reschedule_requests(appointment_id) WHERE status = 'Pending'
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS notifications (
+            notification_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            message TEXT NOT NULL,
+            appointment_id INTEGER,
+            is_read INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            dedupe_key TEXT UNIQUE,
+            FOREIGN KEY (user_id) REFERENCES users(user_id)
+        )
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_notif_user
+        ON notifications(user_id, is_read, notification_id)
+    """)
+
     cur.execute("""
         CREATE UNIQUE INDEX IF NOT EXISTS uq_room_slot
         ON timetable(room, day, time_slot)
     """)
 
-    
     cur.execute("""
         CREATE VIEW IF NOT EXISTS faculty_schedule AS
         SELECT timetable.timetable_id, users.name AS faculty,
@@ -75,7 +109,6 @@ def init_db():
         JOIN users ON timetable.faculty_id = users.user_id
     """)
 
-    
     cur.execute("""
         CREATE TRIGGER IF NOT EXISTS appointment_cancel_check
         AFTER UPDATE OF status ON appointments
@@ -89,7 +122,6 @@ def init_db():
 
     con.commit()
 
-    
     cur.execute("SELECT COUNT(*) FROM users")
     if cur.fetchone()[0] == 0:
         cur.execute(
@@ -108,7 +140,7 @@ def init_db():
             "INSERT INTO users(name,email,password,role) VALUES(?,?,?,?)",
             ("Prof. Rao", "rao@campussync.com", hash_password("faculty123"), "Faculty")
         )
-       
+
         for row in [
             (2, "DBMS", "Mon", "09:00", "204"),
             (2, "DBMS Lab", "Mon", "10:00", "Lab 3"),
@@ -123,7 +155,6 @@ def init_db():
 
     con.commit()
 
-    
     for row in cur.execute("SELECT user_id, password FROM users").fetchall():
         if not is_hashed(row["password"]):
             con.execute(
