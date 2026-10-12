@@ -172,7 +172,7 @@ async function calendarView() {
   </div>`;
 }
 
-async function studentView() {
+async function studentView(){ 
   const facs = list(await api('/api/faculty'));
   if (!ui.fac && facs.length) ui.fac = String(facs[0].user_id);
   const mineP = api('/api/appointments' + qs({ student_id: me.user_id }));
