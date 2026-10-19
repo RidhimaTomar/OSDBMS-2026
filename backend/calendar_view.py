@@ -55,7 +55,7 @@ def get_calendar(params):
 
         rows = con.execute(f"""
             SELECT a.appointment_id, a.student_id, a.day, a.time_slot, a.topic, a.status,
-                   s.name AS student, f.name AS faculty
+                   s.name AS student, f.name AS faculty, a.venue AS venue
             FROM appointments a
             JOIN users s ON a.student_id=s.user_id
             JOIN users f ON a.faculty_id=f.user_id
@@ -74,7 +74,9 @@ def get_calendar(params):
             else:
                 title = f"{r['student']} / {r['faculty']}"
             events.append({"day": r["day"], "time_slot": r["time_slot"], "kind": "appointment",
-                           "title": title, "detail": r["topic"] or "", "status": r["status"],
+                           "title": title,
+                           "detail": (r["topic"] or "") + (" @ " + r["venue"] if r["venue"] else ""),
+                           "venue": r["venue"], "status": r["status"],
                            "appointment_id": r["appointment_id"], "mine": True})
 
         pend = {r["appointment_id"]: dict(r) for r in con.execute("""
