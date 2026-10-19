@@ -19,6 +19,7 @@ def add_user(data):
     email = data.get("email")
     password = data.get("password")
     role = data.get("role")
+    office = (data.get("office") or "").strip()
 
     if not is_admin(admin_id):
         return {"success": False, "message": "Only admin can add users"}
@@ -33,8 +34,8 @@ def add_user(data):
 
     try:
         con.execute(
-            "INSERT INTO users(name, email, password, role) VALUES(?,?,?,?)",
-            (name, email, hash_password(password), role)
+            "INSERT INTO users(name, email, password, role, office) VALUES(?,?,?,?,?)",
+            (name, email, hash_password(password), role, office if role == "Faculty" else "")
         )
         con.commit()
         return {
@@ -92,10 +93,19 @@ def delete_user(data):
         return {"success": False, "message": "Admin cannot be deleted"}
 
     try:
+        from documents import remove_files
+        files = [r["stored_name"] for r in con.execute(
+            "SELECT stored_name FROM documents WHERE uploader_id=?", (user_id,))]
         con.execute("DELETE FROM timetable WHERE faculty_id=?", (user_id,))
+        # Child rows first, otherwise the foreign keys block the delete.
+        con.execute("""DELETE FROM reschedule_requests WHERE requested_by=? OR appointment_id IN
+                       (SELECT appointment_id FROM appointments WHERE student_id=? OR faculty_id=?)""",
+                    (user_id, user_id, user_id))
+        con.execute("DELETE FROM notifications WHERE user_id=?", (user_id,))
         con.execute("DELETE FROM appointments WHERE student_id=? OR faculty_id=?", (user_id, user_id))
         con.execute("DELETE FROM users WHERE user_id=?", (user_id,))
         con.commit()
+        remove_files(files)
         return {"success": True, "message": "User deleted successfully"}
     except Exception as e:
         con.rollback()
@@ -104,11 +114,26 @@ def delete_user(data):
         con.close()
 
 
+def set_faculty_office(data):
+    if not is_admin(data.get("admin_id")):
+        return {"success": False, "message": "Only admin can set faculty offices"}
+    con = get_connection()
+    try:
+        cur = con.execute("UPDATE users SET office=? WHERE user_id=? AND role='Faculty'",
+                          ((data.get("office") or "").strip(), data.get("faculty_id")))
+        con.commit()
+        if not cur.rowcount:
+            return {"success": False, "message": "Faculty not found"}
+        return {"success": True, "message": "Office updated"}
+    finally:
+        con.close()
+
+
 def get_faculty():
-    # Public list so students can choose whom to meet.
+    # Public list so students can choose whom to meet (includes office location).
     con = get_connection()
     rows = con.execute(
-        "SELECT user_id, name FROM users WHERE role='Faculty' ORDER BY name"
+        "SELECT user_id, name, office FROM users WHERE role='Faculty' ORDER BY name"
     ).fetchall()
     con.close()
     return [dict(row) for row in rows]
