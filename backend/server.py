@@ -1,20 +1,23 @@
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, quote
 import json
 import mimetypes
 import os
 
 from database import init_db
 from auth import login
-from users import add_user, get_users, delete_user, get_faculty
+from users import add_user, set_faculty_office, get_faculty
 from timetable import add_timetable, get_timetable, check_conflict, delete_timetable
 from appointments import (
     book_appointment, get_appointments, cancel_appointment,
-    get_availability, respond_appointment, reschedule_appointment
+    get_availability, respond_appointment, reschedule_appointment,
+    set_meeting_venue
 )
+from documents import upload_document, get_documents, get_download, delete_document
 from reschedule import request_reschedule, respond_reschedule, withdraw_reschedule
 from notifications import get_notifications, mark_read
 from calendar_view import get_calendar
+from chat import get_chat_contacts, get_chat_messages, send_chat_message
 from os_engine.fcfs import fcfs
 from os_engine.priority import priority_scheduling
 from os_engine.round_robin import round_robin
@@ -23,24 +26,29 @@ from os_engine.deadlock import deadlock_check
 from os_engine.memory import fifo, lru, optimal
 from os_engine.disk import disk_fcfs, sstf, scan
 
-HOST = "0.0.0.0"
-PORT = int(os.environ.get("PORT", 8000))
+# Local default stays 127.0.0.1:8000; a host (e.g. Render) sets PORT and we listen publicly.
+PORT = int(os.environ.get("PORT") or 8000)
+HOST = os.environ.get("HOST") or ("0.0.0.0" if os.environ.get("PORT") else "127.0.0.1")
+MAX_BODY = 15 * 1024 * 1024  # largest accepted request (10 MB file as base64 + overhead)
 FRONTEND_DIR = os.path.realpath(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "frontend")
 )
 
 GET_ROUTES = {
-    "/api/admin/users": get_users,
     "/api/faculty": lambda q: get_faculty(),
-    "/api/timetable": lambda q: get_timetable(),
+    "/api/timetable": get_timetable,
     "/api/appointments": get_appointments,
     "/api/availability": get_availability,
     "/api/notifications": get_notifications,
     "/api/calendar": get_calendar,
+    "/api/chat/contacts": get_chat_contacts,
+    "/api/chat/messages": get_chat_messages,
+    "/api/documents": get_documents,
 }
 
 POST_ROUTES = {
     "/api/login": login,
+    "/api/chat/send": send_chat_message,
     "/api/admin/users": add_user,
     "/api/timetable": add_timetable,
     "/api/timetable/check-conflict": check_conflict,
@@ -48,10 +56,13 @@ POST_ROUTES = {
     "/api/appointments/cancel": cancel_appointment,
     "/api/appointments/respond": respond_appointment,
     "/api/appointments/reschedule": reschedule_appointment,
+    "/api/appointments/venue": set_meeting_venue,
     "/api/appointments/reschedule-request": request_reschedule,
     "/api/appointments/reschedule-respond": respond_reschedule,
     "/api/appointments/reschedule-withdraw": withdraw_reschedule,
     "/api/notifications/read": mark_read,
+    "/api/documents": upload_document,
+    "/api/admin/faculty-office": set_faculty_office,
 
     "/api/os/fcfs": lambda d: fcfs(d["burst_time"]),
     "/api/os/priority": lambda d: priority_scheduling(d["burst_time"], d["priority"]),
@@ -71,8 +82,8 @@ POST_ROUTES = {
 }
 
 DELETE_ROUTES = {
-    "/api/admin/users": delete_user,
     "/api/timetable": delete_timetable,
+    "/api/documents": delete_document,
 }
 
 class Handler(BaseHTTPRequestHandler):
@@ -95,7 +106,28 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0))
         if length == 0:
             return {}
+        if length > MAX_BODY:
+            raise ValueError("Upload is too large")
         return json.loads(self.rfile.read(length).decode())
+
+    def send_download(self, query):
+        result = get_download(query)
+        if result is None:
+            self.send_json({"success": False, "message": "Document not found"}, 404)
+            return
+        filename, mime, body = result
+        self.send_response(200)
+        self.send_header("Content-Type", mime)
+        self.send_header("Content-Length", str(len(body)))
+        # Always a download (never rendered in the page) and no content sniffing.
+        self.send_header("Content-Disposition", "attachment; filename*=UTF-8''" + quote(filename))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def base_url(self):
+        proto = self.headers.get("X-Forwarded-Proto") or "http"
+        return f"{proto}://{self.headers.get('Host') or 'localhost:' + str(PORT)}"
 
     def send_static(self, path):
 
@@ -126,21 +158,26 @@ class Handler(BaseHTTPRequestHandler):
         self.cors()
         self.end_headers()
 
-      
     def do_GET(self):
         try:
             parsed = urlparse(self.path)
             if parsed.path.startswith("/api/"):
                 query = {k: v[0] for k, v in parse_qs(parsed.query).items()}
-                self.handle_api(GET_ROUTES, query)
+                if parsed.path == "/api/documents/download":
+                    self.send_download(query)
+                else:
+                    self.handle_api(GET_ROUTES, query)
             else:
                 self.send_static(parsed.path)
         except Exception as e:
             self.send_json({"success": False, "message": str(e)}, 500)
-            
+
     def do_POST(self):
         try:
-            self.handle_api(POST_ROUTES, self.read_json())
+            data = self.read_json()
+            if isinstance(data, dict):
+                data["_base_url"] = self.base_url()  # used to build invitation links
+            self.handle_api(POST_ROUTES, data)
         except Exception as e:
             self.send_json({"success": False, "message": str(e)}, 500)
 
@@ -151,11 +188,11 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"success": False, "message": str(e)}, 500)
 
     def log_message(self, fmt, *args):
+        if "/api/" in (args[0] if args else ""):
             super().log_message(fmt, *args)
 
 if __name__ == "__main__":
-    print("Initializing database...", flush=True)
     init_db()
-    print(f"CampusSync running on port {PORT}", flush=True)
+    print(f"CampusSync running at http://{HOST}:{PORT}  (open this in your browser)")
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     server.serve_forever()
