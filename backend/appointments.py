@@ -9,6 +9,11 @@ DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri"]
 TIME_SLOTS = ["09:00", "10:00", "11:00", "12:00", "14:00", "15:00", "16:00"]
 ACTIVE = "('Pending', 'Accepted', 'Rescheduled')"
 
+
+def clean_venue(value):
+    """Meeting place typed by the faculty (free text)."""
+    return (value or "").strip()[:100]
+
 def slot_problem(con, faculty_id, day, time_slot, ignore_id=None):
     if day not in DAYS or time_slot not in TIME_SLOTS:
         return "Invalid day or time slot"
@@ -32,9 +37,12 @@ def slot_problem(con, faculty_id, day, time_slot, ignore_id=None):
 def when(day, time_slot):
     return f"{day} {time_slot}"
 
+def at(venue):
+    return f" at {venue}" if venue else ""
+
 def appt_info(con, appointment_id):
     return con.execute("""
-        SELECT a.*, s.name AS student, f.name AS faculty
+        SELECT a.*, s.name AS student, f.name AS faculty, f.office AS faculty_office
         FROM appointments a
         JOIN users s ON a.student_id = s.user_id
         JOIN users f ON a.faculty_id = f.user_id
@@ -66,6 +74,7 @@ def book_appointment(data):
             if problem:
                 return {"success": False, "message": problem}
 
+           
             cur = con.execute("""
                 INSERT INTO appointments
                 (student_id, faculty_id, day, time_slot, topic)
@@ -83,7 +92,7 @@ def book_appointment(data):
         except sqlite3.IntegrityError:
 
             con.rollback()
-            return {"success": False, "message": "Appointment slot already booked"}
+            return {"success": False, "message": "Appointment slot or venue already booked"}
 
         except Exception as e:
             con.rollback()
@@ -93,11 +102,12 @@ def book_appointment(data):
             con.close()
 
 def get_appointments(params=None):
-    params = params or {}
+    params = params or {  }
     sql = """
         SELECT a.appointment_id, a.student_id, a.faculty_id,
                s.name AS student, f.name AS faculty,
                a.day, a.time_slot, a.topic, a.status,
+               a.venue, f.office AS faculty_office,
                r.request_id AS req_id, r.new_day AS req_day,
                r.new_time_slot AS req_time, r.reason AS req_reason
         FROM appointments a
@@ -149,19 +159,29 @@ def respond_appointment(data):
     with booking_lock:
         con = get_connection()
         try:
-            cur = con.execute("""
-                UPDATE appointments SET status=?
-                WHERE appointment_id=? AND faculty_id=? AND status='Pending'
-            """, (action, data.get("appointment_id"), data.get("faculty_id")))
-
-            if not cur.rowcount:
+            row = appt_info(con, data.get("appointment_id"))
+            if (row is None or row["faculty_id"] != data.get("faculty_id")
+                    or row["status"] != "Pending"):
                 return {"success": False, "message": "Request not found or already handled"}
+
+            # Confirming a meeting means telling the student where to meet (typed by the faculty).
+            venue = ""
+            if action == "Accepted":
+                venue = clean_venue(data.get("venue"))
+                if not venue:
+                    return {"success": False, "message": "Enter where the meeting will take place"}
+
+            con.execute("UPDATE appointments SET status=?, venue=? WHERE appointment_id=?",
+                        (action, venue, row["appointment_id"]))
 
             info = appt_info(con, data.get("appointment_id"))
             notify(con, info["student_id"], action.lower(),
                    f"{info['faculty']} {action.lower()} your meeting on "
-                   f"{when(info['day'], info['time_slot'])}", info["appointment_id"])
+                   f"{when(info['day'], info['time_slot'])}{at(info['venue'])}", info["appointment_id"])
             con.commit()
+        except sqlite3.IntegrityError:
+            con.rollback()
+            return {"success": False, "message": "Appointment slot already booked"}
         finally:
             con.close()
 
@@ -192,18 +212,22 @@ def reschedule_appointment(data):
             if problem:
                 return {"success": False, "message": problem}
 
+            # The meeting place stays the same unless the faculty types a new one.
+            venue = clean_venue(data.get("venue")) or (before["venue"] or "")
+
             con.execute("""
                 UPDATE appointments
-                SET day=?, time_slot=?, status='Rescheduled'
+                SET day=?, time_slot=?, venue=?, status='Rescheduled'
                 WHERE appointment_id=?
-            """, (data["day"], data["time_slot"], appointment_id))
+            """, (data["day"], data["time_slot"], venue, appointment_id))
 
             close_open_requests(con, appointment_id, "Declined")
 
+            after = appt_info(con, appointment_id)
             notify(con, before["student_id"], "rescheduled",
                    f"{before['faculty']} moved your meeting from "
                    f"{when(before['day'], before['time_slot'])} to "
-                   f"{when(data['day'], data['time_slot'])}", appointment_id)
+                   f"{when(data['day'], data['time_slot'])}{at(after['venue'])}", appointment_id)
 
             con.commit()
             return {"success": True, "message": "Booking rescheduled"}
@@ -242,3 +266,28 @@ def cancel_appointment(data):
         return {"success": True, "message": "Appointment cancelled"}
     finally:
         con.close()
+
+def set_meeting_venue(data):
+    """Faculty changes where a confirmed meeting takes place (time stays the same)."""
+    venue = clean_venue(data.get("venue"))
+    if not venue:
+        return {"success": False, "message": "Enter where the meeting will take place"}
+
+    with booking_lock:
+        con = get_connection()
+        try:
+            row = appt_info(con, data.get("appointment_id"))
+            if (row is None or row["faculty_id"] != data.get("faculty_id")
+                    or row["status"] not in ("Accepted", "Rescheduled")):
+                return {"success": False, "message": "Appointment not found"}
+
+            con.execute("UPDATE appointments SET venue=? WHERE appointment_id=?",
+                        (venue, row["appointment_id"]))
+            notify(con, row["student_id"], "venue",
+                   f"{row['faculty']} set the meeting place for "
+                   f"{when(row['day'], row['time_slot'])}{at(venue)}",
+                   row["appointment_id"])
+            con.commit()
+            return {"success": True, "message": "Meeting place updated"}
+        finally:
+            con.close()
