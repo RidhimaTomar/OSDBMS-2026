@@ -24,6 +24,11 @@ def init_db():
         )
     """)
 
+    # Faculty office location (older databases get the column added in place).
+    cols = [r["name"] for r in cur.execute("PRAGMA table_info(users)")]
+    if "office" not in cols:
+        cur.execute("ALTER TABLE users ADD COLUMN office TEXT DEFAULT ''")
+
     cur.execute("""
         CREATE TABLE IF NOT EXISTS timetable (
             timetable_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -100,6 +105,90 @@ def init_db():
         ON timetable(room, day, time_slot)
     """)
 
+    # ---- Venues (where a meeting takes place) ----
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS venues (
+            venue_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL,
+            location TEXT DEFAULT '',
+            capacity INTEGER DEFAULT 1 CHECK (capacity > 0)
+        )
+    """)
+
+    # Older databases have no venue column on appointments: add it in place.
+    cols = [r["name"] for r in cur.execute("PRAGMA table_info(appointments)")]
+    if "venue_id" not in cols:
+        cur.execute("ALTER TABLE appointments ADD COLUMN venue_id INTEGER REFERENCES venues(venue_id)")
+
+    # The meeting place is now free text typed by the faculty (e.g. "my office", "Room 204").
+    if "venue" not in cols:
+        cur.execute("ALTER TABLE appointments ADD COLUMN venue TEXT DEFAULT ''")
+        # Keep the place of meetings that were booked with the old venue list.
+        cur.execute("""UPDATE appointments
+                       SET venue=(SELECT name FROM venues WHERE venues.venue_id=appointments.venue_id)
+                       WHERE venue_id IS NOT NULL""")
+
+    # One venue can host only one active meeting at a given day + time.
+    cur.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_venue_slot
+        ON appointments(venue_id, day, time_slot)
+        WHERE venue_id IS NOT NULL AND status IN ('Pending', 'Accepted', 'Rescheduled')
+    """)
+
+    # ---- Shared documents / notes ----
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS documents (
+            document_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            uploader_id INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            subject TEXT DEFAULT '',
+            description TEXT DEFAULT '',
+            filename TEXT NOT NULL,
+            stored_name TEXT UNIQUE NOT NULL,
+            mime_type TEXT DEFAULT 'application/octet-stream',
+            size_bytes INTEGER NOT NULL CHECK (size_bytes > 0),
+            uploaded_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (uploader_id) REFERENCES users(user_id) ON DELETE CASCADE
+        )
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_documents_uploader ON documents(uploader_id)")
+
+    # ---- Student/faculty direct chat ----
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS chat_messages (
+            message_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sender_id INTEGER NOT NULL,
+            recipient_id INTEGER NOT NULL,
+            message TEXT NOT NULL CHECK (length(message) BETWEEN 1 AND 2000),
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            is_read INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY (sender_id) REFERENCES users(user_id) ON DELETE CASCADE,
+            FOREIGN KEY (recipient_id) REFERENCES users(user_id) ON DELETE CASCADE
+        )
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_chat_pair ON chat_messages(sender_id, recipient_id, message_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_chat_inbox ON chat_messages(recipient_id, is_read, message_id)")
+
+    # ---- Faculty invitations (admin invites by email, faculty registers via link) ----
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS invitations (
+            invitation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT NOT NULL,
+            name TEXT DEFAULT '',
+            token_hash TEXT UNIQUE NOT NULL,
+            invited_by INTEGER NOT NULL,
+            status TEXT DEFAULT 'Pending' CHECK (status IN ('Pending', 'Accepted', 'Revoked')),
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            expires_at TEXT NOT NULL,
+            FOREIGN KEY (invited_by) REFERENCES users(user_id)
+        )
+    """)
+    # At most one live invitation per email.
+    cur.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_pending_invite
+        ON invitations(email) WHERE status = 'Pending'
+    """)
+
     cur.execute("""
         CREATE VIEW IF NOT EXISTS faculty_schedule AS
         SELECT timetable.timetable_id, users.name AS faculty,
@@ -153,6 +242,17 @@ def init_db():
                 "VALUES(?,?,?,?,?)", row
             )
 
+    con.commit()
+
+    if cur.execute("SELECT COUNT(*) FROM venues").fetchone()[0] == 0:
+        for v in [
+            ("Faculty Cabin", "Staff block, 1st floor", 3),
+            ("Meeting Room 1", "Admin block, ground floor", 8),
+            ("Meeting Room 2", "Admin block, ground floor", 8),
+            ("Library Discussion Room", "Library, 2nd floor", 6),
+            ("Seminar Hall", "Main building", 40),
+        ]:
+            cur.execute("INSERT INTO venues(name,location,capacity) VALUES(?,?,?)", v)
     con.commit()
 
     for row in cur.execute("SELECT user_id, password FROM users").fetchall():
