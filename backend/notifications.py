@@ -56,14 +56,28 @@ def get_notifications(params):
 def mark_read(data):
     user_id = data.get("user_id")
     nid = data.get("notification_id")
+    if not user_id:
+        return {"success": False, "message": "user_id required"}
+
     con = get_connection()
     try:
         if nid:
             con.execute("UPDATE notifications SET is_read=1 WHERE notification_id=? AND user_id=?",
                         (nid, user_id))
-        else:
-            con.execute("UPDATE notifications SET is_read=1 WHERE user_id=?", (user_id,))
+            con.commit()
+            return {"success": True, "message": "Marked as read"}
+
+        # "Mark all as read": tell the user if there is nothing left to mark.
+        unread = con.execute(
+            "SELECT COUNT(*) FROM notifications WHERE user_id=? AND is_read=0",
+            (user_id,)).fetchone()[0]
+        if unread == 0:
+            return {"success": True, "already_read": True,
+                    "message": "All notifications are already marked as read"}
+
+        con.execute("UPDATE notifications SET is_read=1 WHERE user_id=?", (user_id,))
         con.commit()
-        return {"success": True, "message": "Marked as read"}
+        return {"success": True, "already_read": False,
+                "message": "All notifications marked as read"}
     finally:
         con.close()
