@@ -135,16 +135,6 @@ button.ev.free.link small{color:var(--muted);font-size:11px}
 a.btn{display:inline-block;text-decoration:none;text-align:center}
 .search{max-width:320px}
 
-@media (max-width:760px){
-  #appView{grid-template-columns:1fr}
-  .side{position:static;height:auto;flex-direction:row;align-items:center;padding:10px 12px}
-  .brand{padding:0 8px;font-size:17px}
-  .side{overflow-x:auto;border-right:0;border-bottom:1px solid var(--line)}
-  .navbtn{width:auto;padding:8px 12px;white-space:nowrap}.navbtn.active{box-shadow:none}.navbtn.logout{margin:0 0 0 auto}
-  .navbtn span{display:none}.nbadge{margin-left:0;position:absolute;top:0;right:0}
-  .grid2,.slots,.subform .slots{grid-template-columns:1fr}
-  main{padding:18px 16px}.topbar{padding:10px 16px}
-}
 @media (prefers-reduced-motion:reduce){#toast{transition:none}}
 
 /* Faculty/student messaging */
@@ -156,3 +146,92 @@ a.btn{display:inline-block;text-decoration:none;text-align:center}
 .chat-compose{border-top:1px solid var(--line);padding-top:10px}.chat-compose textarea{min-height:66px}
 .chat-compose .actions{justify-content:space-between;margin-top:8px}.chat-compose .btn{margin-top:0}
 @media(max-width:760px){.chat-messages{max-height:360px;padding:10px}.chat-bubble{max-width:94%}}
+
+/* Required-field highlighting */
+.invalid{border:2px solid var(--bad)!important;background:var(--badbg)}
+textarea.invalid,select.invalid,input.invalid{outline:none}
+.slots.invalid{border-radius:12px;padding:10px}
+.ferr{color:var(--bad);font-size:14px;font-weight:600;margin:6px 0 0}
+.reqstar{color:var(--bad)}
+
+/* Clickable cells in the faculty timetable grid */
+.cellbtn{all:unset;box-sizing:border-box;display:block;width:100%;cursor:pointer;border-radius:6px;padding:2px 4px;color:inherit}
+.cellbtn small{display:block;font-size:12px;opacity:.75}
+.cellbtn:hover{background:#ffffffaa;outline:1px solid currentColor}
+.cellbtn:focus-visible{outline:3px solid var(--blue)}
+td.free .cellbtn small{opacity:0}
+td.free:hover .cellbtn small,td.free .cellbtn:focus-visible small{opacity:.85}
+
+/* Date input, audience picker, student class rows */
+input[type="date"]{min-height:46px}
+.radios{display:flex;gap:18px;flex-wrap:wrap;margin:6px 0}
+.radios label{display:flex;align-items:center;gap:8px;margin:0;font-weight:600;cursor:pointer}
+.radios input,.aud input{width:auto;margin:0}
+.aud{display:flex;flex-wrap:wrap;gap:10px;margin:10px 0 4px}
+.aud label{display:flex;align-items:center;gap:8px;margin:0;padding:8px 12px;border:1.5px solid var(--line);border-radius:10px;background:#fff;font-weight:600;cursor:pointer}
+.aud label:has(input:checked){border-color:var(--blue);background:var(--soft)}
+.audtag{display:inline-block;background:var(--soft);color:var(--navy);border-radius:99px;padding:1px 10px;margin-left:6px;font-size:13px;font-weight:600}
+
+/* Three side-by-side boxes: course / semester / section */
+.aud3{display:grid;grid-template-columns:2fr 1fr 1fr;gap:16px}
+@media (max-width:760px){.aud3{grid-template-columns:1fr}}
+
+/* ===================== App / phone layout ===================== */
+html{-webkit-text-size-adjust:100%}
+body{-webkit-tap-highlight-color:transparent}
+button{touch-action:manipulation}
+.mainwrap,main{min-width:0}
+.ico{font-style:normal;font-size:20px;line-height:1;font-family:"Segoe UI Emoji","Apple Color Emoji","Noto Color Emoji",sans-serif}
+.topbrand,.iconbtn{display:none}
+.scroll th:first-child{position:sticky;left:0;z-index:1}
+
+@media (max-width:760px){
+  /* nothing may push the page wider than the screen */
+  #appView{grid-template-columns:minmax(0,1fr);padding-bottom:calc(76px + env(safe-area-inset-bottom,0px))}
+
+  /* top app bar: brand on the left, profile + log out on the right */
+  .topbar{position:sticky;top:0;z-index:40;justify-content:space-between;gap:10px;
+    padding:calc(10px + env(safe-area-inset-top,0px)) 14px 10px}
+  .topbrand{display:block;font-weight:700;font-size:18px;color:var(--navy);white-space:nowrap}
+  .user{gap:8px;margin-left:auto;min-width:0}
+  .avatar{width:34px;height:34px;flex:none}
+  .who{min-width:0;max-width:96px;line-height:1.2}
+  .who b,.who small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .who small{font-size:12px}
+  .iconbtn{all:unset;box-sizing:border-box;display:grid;place-items:center;flex:none;width:42px;height:42px;
+    border-radius:50%;background:var(--soft);font-size:20px;cursor:pointer}
+  .iconbtn:active{background:var(--line)}
+  .iconbtn:focus-visible{outline:3px solid var(--blue)}
+
+  /* bottom navigation bar, like a native Android app */
+  .side{position:fixed;left:0;right:0;bottom:0;top:auto;height:auto;z-index:50;
+    flex-direction:row;justify-content:space-around;align-items:stretch;gap:0;
+    padding:6px 4px calc(6px + env(safe-area-inset-bottom,0px));
+    border-right:0;border-top:1px solid var(--line);box-shadow:0 -4px 16px rgba(0,43,92,.08)}
+  .brand,.navbtn.logout{display:none}
+  .navbtn{flex:1 1 0;min-width:0;width:auto;flex-direction:column;justify-content:center;gap:2px;
+    padding:6px 2px;border-radius:12px;font-size:11px;text-align:center;white-space:nowrap}
+  .navbtn span{max-width:100%;overflow:hidden;text-overflow:ellipsis}
+  .navbtn.active{box-shadow:none;background:var(--soft)}
+  .ico{font-size:22px}
+  .navbtn[data-view="notifications"] span{font-size:0}
+  .navbtn[data-view="notifications"] span::after{content:"Alerts";font-size:11px}
+  .nbadge{position:absolute;top:0;left:50%;margin:0 0 0 6px;min-width:18px;height:18px;font-size:11px}
+
+  /* content */
+  main{padding:14px 12px}
+  .card{padding:16px;margin-bottom:14px}
+  .card h2{font-size:20px}
+  .grid2,.aud3{grid-template-columns:1fr}
+  .slots,.subform .slots{grid-template-columns:repeat(2,1fr);gap:10px}
+  .slot{padding:12px 10px 12px 38px}.slot::before{left:13px}
+  .row>.actions{width:100%}
+  .btn{min-height:46px}
+  .btn.small,.btn.ghost{min-height:40px}
+  input:not([type="radio"]):not([type="checkbox"]):not([type="file"]),select{min-height:46px}
+  textarea{min-height:80px}
+  .search{max-width:none;width:100%}
+  table.cal{min-width:640px}
+  table.cal td{height:64px}
+  #toast{bottom:calc(86px + env(safe-area-inset-bottom,0px))}
+}
