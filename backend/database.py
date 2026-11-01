@@ -24,10 +24,15 @@ def init_db():
         )
     """)
 
-    # Faculty office location (older databases get the column added in place).
     cols = [r["name"] for r in cur.execute("PRAGMA table_info(users)")]
     if "office" not in cols:
         cur.execute("ALTER TABLE users ADD COLUMN office TEXT DEFAULT ''")
+    if "semester" not in cols:
+        cur.execute("ALTER TABLE users ADD COLUMN semester TEXT DEFAULT ''")
+    if "section" not in cols:
+        cur.execute("ALTER TABLE users ADD COLUMN section TEXT DEFAULT ''")
+    if "course" not in cols:
+        cur.execute("ALTER TABLE users ADD COLUMN course TEXT DEFAULT ''")
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS timetable (
@@ -54,12 +59,6 @@ def init_db():
             FOREIGN KEY (student_id) REFERENCES users(user_id),
             FOREIGN KEY (faculty_id) REFERENCES users(user_id)
         )
-    """)
-
-    cur.execute("""
-        CREATE UNIQUE INDEX IF NOT EXISTS uq_active_slot
-        ON appointments(faculty_id, day, time_slot)
-        WHERE status IN ('Pending', 'Accepted', 'Rescheduled')
     """)
 
     cur.execute("""
@@ -100,9 +99,12 @@ def init_db():
         ON notifications(user_id, is_read, notification_id)
     """)
 
+    # A room can host one class per slot. Entries with no room (e.g. "Meeting with HR")
+    # are not subject to this rule. The old index (which required a room) is replaced.
+    cur.execute("DROP INDEX IF EXISTS uq_room_slot")
     cur.execute("""
-        CREATE UNIQUE INDEX IF NOT EXISTS uq_room_slot
-        ON timetable(room, day, time_slot)
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_room_slot_v2
+        ON timetable(room, day, time_slot) WHERE room != ''
     """)
 
     # ---- Venues (where a meeting takes place) ----
@@ -135,6 +137,37 @@ def init_db():
         WHERE venue_id IS NOT NULL AND status IN ('Pending', 'Accepted', 'Rescheduled')
     """)
 
+    # ---- Appointment date ----
+    cols = [r["name"] for r in cur.execute("PRAGMA table_info(appointments)")]
+    if "appt_date" not in cols:
+        cur.execute("ALTER TABLE appointments ADD COLUMN appt_date TEXT DEFAULT ''")
+
+    # One active booking per faculty + slot + DATE (the old index ignored the date).
+    cur.execute("DROP INDEX IF EXISTS uq_active_slot")
+    cur.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_active_slot_v2
+        ON appointments(faculty_id, day, time_slot, COALESCE(appt_date, ''))
+        WHERE status IN ('Pending', 'Accepted', 'Rescheduled')
+    """)
+
+    # If another module changes `day` only, move the date to the next matching weekday.
+    cur.execute("""
+        CREATE TRIGGER IF NOT EXISTS appt_date_follow_day
+        AFTER UPDATE OF day ON appointments
+        WHEN NEW.appt_date IS NOT NULL AND NEW.appt_date != ''
+         AND CAST(strftime('%w', NEW.appt_date) AS INTEGER) !=
+             (CASE NEW.day WHEN 'Mon' THEN 1 WHEN 'Tue' THEN 2 WHEN 'Wed' THEN 3
+                           WHEN 'Thu' THEN 4 WHEN 'Fri' THEN 5 END)
+        BEGIN
+            UPDATE appointments
+            SET appt_date = date(NEW.appt_date, '+' ||
+                ((CASE NEW.day WHEN 'Mon' THEN 1 WHEN 'Tue' THEN 2 WHEN 'Wed' THEN 3
+                               WHEN 'Thu' THEN 4 WHEN 'Fri' THEN 5 END
+                  - CAST(strftime('%w', NEW.appt_date) AS INTEGER) + 7) % 7) || ' days')
+            WHERE appointment_id = NEW.appointment_id;
+        END
+    """)
+
     # ---- Shared documents / notes ----
     cur.execute("""
         CREATE TABLE IF NOT EXISTS documents (
@@ -152,6 +185,22 @@ def init_db():
         )
     """)
     cur.execute("CREATE INDEX IF NOT EXISTS idx_documents_uploader ON documents(uploader_id)")
+
+    # ---- Who can see a document (no rows = everyone) ----
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS document_targets (
+            document_id INTEGER NOT NULL,
+            course TEXT NOT NULL DEFAULT '',
+            semester TEXT NOT NULL DEFAULT '',
+            section TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (document_id, course, semester, section),
+            FOREIGN KEY (document_id) REFERENCES documents(document_id) ON DELETE CASCADE
+        )
+    """)
+    # A blank course / semester / section means "any". Older databases get the new column.
+    tcols = [r["name"] for r in cur.execute("PRAGMA table_info(document_targets)")]
+    if "course" not in tcols:
+        cur.execute("ALTER TABLE document_targets ADD COLUMN course TEXT NOT NULL DEFAULT ''")
 
     # ---- Student/faculty direct chat ----
     cur.execute("""
@@ -262,5 +311,12 @@ def init_db():
                 (hash_password(row["password"]), row["user_id"])
             )
 
+    con.commit()
+
+    # Demo student gets a class so section-wise notes can be tested.
+    con.execute("""UPDATE users SET semester='3', section='A'
+                   WHERE email='student@campussync.com' AND (section IS NULL OR section='')""")
+    con.execute("""UPDATE users SET course='B.Tech CSE'
+                   WHERE email='student@campussync.com' AND (course IS NULL OR course='')""")
     con.commit()
     con.close()
