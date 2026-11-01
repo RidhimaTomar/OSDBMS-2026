@@ -14,11 +14,13 @@ UPLOAD_DIR = os.environ.get("CAMPUS_UPLOADS") or os.path.join(
 MAX_BYTES = 10 * 1024 * 1024
 ALLOWED = {".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx", ".csv",
            ".txt", ".md", ".png", ".jpg", ".jpeg", ".zip"}
-UPLOADERS = ("Faculty")
+UPLOADERS = ("Faculty", "Admin")
+
+NO_TARGETS = "NOT EXISTS (SELECT 1 FROM document_targets t WHERE t.document_id = d.document_id)"
 
 
 def _user(con, user_id):
-    return con.execute("SELECT user_id, name, role FROM users WHERE user_id=?",
+    return con.execute("SELECT user_id, name, role, course, semester, section FROM users WHERE user_id=?",
                        (user_id,)).fetchone()
 
 
@@ -26,6 +28,27 @@ def _clean_name(name):
     """Keep only the file name part and strip risky characters."""
     name = os.path.basename((name or "").replace("\\", "/")).strip()
     return re.sub(r"[^A-Za-z0-9._ ()\-]", "_", name)[:120]
+
+
+def _visible(user):
+    """SQL fragment + args: which documents this user may see."""
+    if user["role"] == "Admin":
+        return "", []
+    if user["role"] == "Faculty":
+        return f" AND (d.uploader_id=? OR {NO_TARGETS})", [user["user_id"]]
+    return (f" AND ({NO_TARGETS} OR EXISTS (SELECT 1 FROM document_targets t "
+            "WHERE t.document_id = d.document_id "
+            "AND (t.course='' OR lower(t.course)=lower(?)) "
+            "AND (t.semester='' OR lower(t.semester)=lower(?)) "
+            "AND (t.section='' OR lower(t.section)=lower(?))))",
+            [user["course"] or "", user["semester"] or "", user["section"] or ""])
+
+
+def _read_group(data):
+    """Audience typed by the teacher. A blank box means 'any'."""
+    return (str(data.get("course") or "").strip()[:60],
+            str(data.get("semester") or "").strip()[:10],
+            str(data.get("section") or "").strip().upper()[:10])
 
 
 def upload_document(data):
@@ -44,6 +67,10 @@ def upload_document(data):
         if not filename or ext not in ALLOWED:
             return {"success": False,
                     "message": "File type not allowed. Use " + ", ".join(sorted(ALLOWED))}
+
+        group = _read_group(data) if data.get("restricted") else None
+        if group is not None and not any(group):
+            return {"success": False, "message": "Enter a course, semester or section"}
 
         try:
             raw = base64.b64decode(data.get("data") or "", validate=True)
@@ -70,9 +97,25 @@ def upload_document(data):
                   (data.get("description") or "").strip()[:500], filename, stored,
                   mimetypes.guess_type(filename)[0] or "application/octet-stream", len(raw)))
 
+            doc_id = cur.lastrowid
+            if group:
+                con.execute("INSERT INTO document_targets(document_id, course, semester, section) "
+                            "VALUES (?,?,?,?)", (doc_id, *group))
+
             notify(con, user["user_id"], "document",
                    f"Your document \"{title[:150]}\" was uploaded successfully")
-            for s in con.execute("SELECT user_id FROM users WHERE role='Student'").fetchall():
+
+            if group:
+                students = con.execute(
+                    "SELECT user_id FROM users WHERE role='Student' "
+                    "AND (?='' OR lower(course)=lower(?)) "
+                    "AND (?='' OR lower(semester)=lower(?)) "
+                    "AND (?='' OR lower(section)=lower(?))",
+                    [group[0], group[0], group[1], group[1], group[2], group[2]]).fetchall()
+            else:
+                students = con.execute("SELECT user_id FROM users WHERE role='Student'").fetchall()
+
+            for s in students:
                 notify(con, s["user_id"], "document",
                        f"{user['name']} shared a new document: {title[:150]}")
             con.commit()
@@ -81,7 +124,7 @@ def upload_document(data):
             os.remove(path)  # do not leave a file behind without a database row
             raise
 
-        return {"success": True, "message": "Document uploaded", "document_id": cur.lastrowid}
+        return {"success": True, "message": "Document uploaded", "document_id": doc_id}
     finally:
         con.close()
 
@@ -89,16 +132,24 @@ def upload_document(data):
 def get_documents(params):
     con = get_connection()
     try:
-        if _user(con, params.get("user_id")) is None:
+        user = _user(con, params.get("user_id"))
+        if user is None:
             return {"success": False, "message": "Please log in"}
 
         sql = """
             SELECT d.document_id, d.title, d.subject, d.description, d.filename,
-                   d.size_bytes, d.uploaded_at, d.uploader_id, u.name AS uploader
+                   d.size_bytes, d.uploaded_at, d.uploader_id, u.name AS uploader,
+                   (SELECT group_concat(trim(t.course
+                        || CASE WHEN t.semester != '' THEN ' Sem ' || t.semester ELSE '' END
+                        || CASE WHEN t.section != '' THEN ' Sec ' || t.section ELSE '' END), ', ')
+                      FROM document_targets t WHERE t.document_id = d.document_id) AS audience
             FROM documents d JOIN users u ON d.uploader_id = u.user_id
             WHERE 1=1
         """
-        args = []
+        clause, args = _visible(user)
+        sql += clause
+        args = list(args)
+
         q = (params.get("q") or "").strip()
         if q:
             sql += " AND (d.title LIKE ? OR d.subject LIKE ? OR d.description LIKE ? OR u.name LIKE ?)"
@@ -115,13 +166,16 @@ def get_documents(params):
 
 
 def get_download(params):
-    """Return (filename, mime_type, bytes) or None. Used by the server for binary replies."""
+    """Return (filename, mime_type, bytes) or None. Respects the document's audience."""
     con = get_connection()
     try:
-        if _user(con, params.get("user_id")) is None:
+        user = _user(con, params.get("user_id"))
+        if user is None:
             return None
-        row = con.execute("SELECT filename, stored_name, mime_type FROM documents WHERE document_id=?",
-                          (params.get("document_id"),)).fetchone()
+        clause, cargs = _visible(user)
+        row = con.execute(
+            "SELECT d.filename, d.stored_name, d.mime_type FROM documents d WHERE d.document_id=?" + clause,
+            [params.get("document_id"), *cargs]).fetchone()
     finally:
         con.close()
 
@@ -160,4 +214,3 @@ def delete_document(data):
 
     remove_files([doc["stored_name"]])
     return {"success": True, "message": "Document deleted"}
-
