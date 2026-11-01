@@ -25,47 +25,47 @@ def get_calendar(params):
             return {"success": False, "message": "Unknown user"}
         role = me["role"]
 
-        fid = params.get("faculty_id")
+        # Faculty see their own calendar, students see only their own bookings,
+        # and only the admin may look at a chosen faculty member's calendar.
+        fid = None
         if role == "Faculty":
             fid = uid
-        elif fid:
-            fid = int(fid)
-        else:
-            fid = None
+        elif role == "Admin" and params.get("faculty_id"):
+            fid = int(params["faculty_id"])
 
+        days = week_dates()
+        week = {d["date"] for d in days}
         events = []
 
-        sql = """SELECT t.day, t.time_slot, t.subject, t.room, u.name AS faculty
-                 FROM timetable t JOIN users u ON t.faculty_id=u.user_id"""
-        rows = con.execute(sql + (" WHERE t.faculty_id=?" if fid else ""),
-                           (fid,) if fid else ()).fetchall() if (fid or role == "Admin") else []
-        for r in rows:
-            show = role != "Student"
-            events.append({
-                "day": r["day"], "time_slot": r["time_slot"], "kind": "class",
-                "title": r["subject"] if show else "Class",
-                "detail": ("Room " + r["room"] + (" - " + r["faculty"] if role == "Admin" else ""))
-                          if show else "Faculty teaching"})
+        # Classes are shown to faculty and admin only (students never see them).
+        if role != "Student":
+            sql = """SELECT t.day, t.time_slot, t.subject, t.room, u.name AS faculty
+                     FROM timetable t JOIN users u ON t.faculty_id=u.user_id"""
+            rows = con.execute(sql + (" WHERE t.faculty_id=?" if fid else ""),
+                               (fid,) if fid else ()).fetchall()
+            for r in rows:
+                events.append({
+                    "day": r["day"], "time_slot": r["time_slot"], "kind": "class",
+                    "title": r["subject"],
+                    "detail": "Room " + r["room"] + (" - " + r["faculty"] if role == "Admin" else "")})
 
         where, args = "a.status IN " + ACTIVE, []
-        if fid:
-            where += " AND a.faculty_id=?"; args.append(fid)
-        elif role == "Student":
+        if role == "Student":
             where += " AND a.student_id=?"; args.append(uid)
+        elif fid:
+            where += " AND a.faculty_id=?"; args.append(fid)
 
         rows = con.execute(f"""
-            SELECT a.appointment_id, a.student_id, a.day, a.time_slot, a.topic, a.status,
-                   s.name AS student, f.name AS faculty, a.venue AS venue
+            SELECT a.appointment_id, a.student_id, a.day, a.time_slot, a.appt_date,
+                   a.topic, a.status, s.name AS student, f.name AS faculty, a.venue AS venue
             FROM appointments a
             JOIN users s ON a.student_id=s.user_id
             JOIN users f ON a.faculty_id=f.user_id
             WHERE {where}""", args).fetchall()
 
         for r in rows:
-            mine = (role == "Student" and r["student_id"] == uid)
-            if role == "Student" and not mine:
-                events.append({"day": r["day"], "time_slot": r["time_slot"], "kind": "busy",
-                               "title": "Booked", "detail": "Taken by another student"})
+            # A dated booking only appears in the week it falls in.
+            if r["appt_date"] and r["appt_date"] not in week:
                 continue
             if role == "Faculty":
                 title = r["student"]
@@ -88,6 +88,6 @@ def get_calendar(params):
                 e["moving_to"] = f"{p['new_day']} {p['new_time_slot']}"
 
         return {"success": True, "role": role, "faculty_id": fid,
-                "days": week_dates(), "slots": TIME_SLOTS, "events": events}
+                "days": days, "slots": TIME_SLOTS, "events": events}
     finally:
         con.close()
