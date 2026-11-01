@@ -6,8 +6,10 @@ import os
 
 from database import init_db
 from auth import login
-from users import add_user, set_faculty_office, get_faculty
-from timetable import add_timetable, get_timetable, check_conflict, delete_timetable
+from users import (
+    add_user, set_faculty_office, set_student_class, get_students, get_faculty
+)
+from timetable import add_timetable, get_timetable, check_conflict, delete_timetable, update_timetable
 from appointments import (
     book_appointment, get_appointments, cancel_appointment,
     get_availability, respond_appointment, reschedule_appointment,
@@ -34,6 +36,15 @@ FRONTEND_DIR = os.path.realpath(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "frontend")
 )
 
+def book_checked(d):
+    """Server-side check: date, time slot and purpose of meeting are all compulsory."""
+    labels = (("date", "date"), ("time_slot", "time slot"), ("topic", "purpose of the meeting"))
+    missing = [name for key, name in labels if not str(d.get(key) or "").strip()]
+    if missing:
+        return {"success": False, "message": "Please fill in: " + ", ".join(missing)}
+    d["topic"] = d["topic"].strip()
+    return book_appointment(d)
+
 GET_ROUTES = {
     "/api/faculty": lambda q: get_faculty(),
     "/api/timetable": get_timetable,
@@ -44,15 +55,18 @@ GET_ROUTES = {
     "/api/chat/contacts": get_chat_contacts,
     "/api/chat/messages": get_chat_messages,
     "/api/documents": get_documents,
+    "/api/admin/students": get_students,
 }
 
 POST_ROUTES = {
     "/api/login": login,
     "/api/chat/send": send_chat_message,
     "/api/admin/users": add_user,
+    "/api/admin/student-class": set_student_class,
     "/api/timetable": add_timetable,
+    "/api/timetable/update": update_timetable,
     "/api/timetable/check-conflict": check_conflict,
-    "/api/appointments": book_appointment,
+    "/api/appointments": book_checked,
     "/api/appointments/cancel": cancel_appointment,
     "/api/appointments/respond": respond_appointment,
     "/api/appointments/reschedule": reschedule_appointment,
@@ -193,6 +207,6 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     init_db()
-    print(f"CampusSync running at http://{HOST}:{PORT}  (open this in your browser)")
+    print(f"CampusSync running at http://{HOST}:{PORT}  (open this in your browser)", flush=True)
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     server.serve_forever()
