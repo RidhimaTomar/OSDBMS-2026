@@ -1,5 +1,3 @@
-// Same server for page + API when deployed (and when opened on port 8000); only a separately
-// served local page (e.g. VS Code Live Server) needs the explicit address.
 const LOCAL = ['localhost', '127.0.0.1', ''].includes(location.hostname);
 const API = (LOCAL && location.port !== '8000') ? 'http://127.0.0.1:8000' : '';
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
@@ -9,6 +7,21 @@ const ACTIVE = ['Pending', 'Accepted', 'Rescheduled'];
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const qs = o => '?' + new URLSearchParams(o);
+
+// ---- date helpers ----
+const iso = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+const todayIso = () => iso(new Date());
+const maxDateIso = () => { const d = new Date(); d.setDate(d.getDate() + 60); return iso(d); };
+const nextWorkday = () => { const d = new Date(); while (d.getDay() === 0 || d.getDay() === 6) d.setDate(d.getDate() + 1); return iso(d); };
+const dayOf = s => DAYS[(new Date(s + 'T00:00').getDay() + 6) % 7];   // undefined for Sat/Sun
+const shortDate = s => new Date(s + 'T00:00').toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+const prettyDate = s => new Date(s + 'T00:00').toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+const whenTxt = a => a.appt_date ? `${a.day} ${shortDate(a.appt_date)}, ${a.time_slot}` : `${a.day} ${a.time_slot}`;
+const weekIso = () => {
+  const d = new Date(), dow = d.getDay();
+  d.setDate(d.getDate() + (dow === 0 ? 1 : dow === 6 ? 2 : 1 - dow));
+  return DAYS.map((_, i) => { const x = new Date(d); x.setDate(d.getDate() + i); return iso(x); });
+};
 
 function toast(msg) {
   const t = $('toast'); t.textContent = msg; t.classList.add('show');
@@ -33,13 +46,14 @@ const list = x => (Array.isArray(x) ? x : []);
 let me = JSON.parse(sessionStorage.getItem('campus_user'));
 const freshUi = () => ({
   view: 'dashboard',
-  fac: '', day: 'Mon', pick: null, topic: '',
+  fac: '', day: 'Mon', bookDate: '', pick: null, topic: '',
   resId: null,
   rsId: null, rsDay: 'Mon', rsPick: null, rsReason: '',
   calFac: '', lastNid: 0,
-  docQ: '', docTitle: '', docSubject: '', docDesc: '', docFile: null,
+  docQ: '', docTitle: '', docSubject: '', docDesc: '', docFile: null, docAud: 'all', docCourse: '', docSem: '', docSec: '',
   admFac: '', venueDraft: {},
-  chatContact: '', chatMessage: ''
+  chatContact: '', chatMessage: '',
+  bookErr: {}, editTT: null, ttDraft: {}
 });
 let ui = freshUi();
 let pollTimer = null;
@@ -53,12 +67,14 @@ $('loginForm').onsubmit = async e => {
   $('loginForm').reset(); $('authMsg').textContent = '';
   start();
 };
-$('logoutBtn').onclick = () => {
+const logout = () => {
   sessionStorage.removeItem('campus_user'); me = null;
   clearInterval(pollTimer);
   ui = freshUi();
   $('appView').hidden = true; $('authView').hidden = false; toast('You have been logged out');
 };
+$('logoutBtn').onclick = logout;
+$('logoutTop').onclick = logout;
 
 function start() {
   $('authView').hidden = true; $('appView').hidden = false;
@@ -84,7 +100,7 @@ async function render() {
 
 document.querySelectorAll('.navbtn[data-view]').forEach(b => b.onclick = () => { ui.view = b.dataset.view; render(); });
 
-const formOpen = () => ui.resId || ui.rsId || ui.pick || ui.topic || ui.rsReason || Object.keys(ui.venueDraft).length
+const formOpen = () => ui.editTT || ui.resId || ui.rsId || ui.pick || ui.topic || ui.rsReason || Object.keys(ui.venueDraft).length
   || (ui.view === 'documents' && (ui.docTitle || ui.docSubject || ui.docDesc || ui.docFile || ui.docQ));
 
 function setBadge(n) {
@@ -126,7 +142,7 @@ async function notificationsView() {
   <div class="card">
     <div class="row head"><div><h2>Notifications</h2>
       <p class="muted small">${r.unread ? r.unread + ' unread' : 'You are all caught up'}</p></div>
-      <button class="btn ghost small" data-act="readAll" ${r.unread ? '' : 'disabled'}>Mark all as read</button></div>
+      <button class="btn ghost small" data-act="readAll">Mark all as read</button></div>
     ${items.map(n => { const [icon, tone] = KIND[n.kind] || ['🔔', 'info'];
       return `<button class="notif ${tone} ${n.is_read ? '' : 'unread'}" data-act="readOne" data-id="${n.notification_id}">
         <span class="nicon">${icon}</span>
@@ -137,13 +153,13 @@ async function notificationsView() {
 }
 
 async function calendarView() {
-  const needFac = me.role !== 'Faculty';
+  const needFac = me.role === 'Admin';   // students see only their own calendar
   const facs = needFac ? list(await api('/api/faculty')) : [];
   const cal = await api('/api/calendar' + qs({ user_id: me.user_id, ...(needFac && ui.calFac ? { faculty_id: ui.calFac } : {}) }));
   if (!cal.success) return `<div class="card"><p class="error">${esc(cal.message)}</p></div>`;
 
   const showFree = cal.faculty_id != null;
-  const fmt = iso => new Date(iso + 'T00:00').toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+  const fmt = isoStr => new Date(isoStr + 'T00:00').toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
   const cell = (d, t) => {
     const ev = cal.events.filter(e => e.day === d.day && e.time_slot === t);
     const inner = ev.map(e => e.kind === 'class'
@@ -155,7 +171,7 @@ async function calendarView() {
             <span class="tag ${e.status}">${e.status}</span></div>`).join('');
     if (inner) return `<td class="${d.is_today ? 'today' : ''}">${inner}</td>`;
     if (showFree && me.role === 'Student')
-      return `<td class="${d.is_today ? 'today' : ''}"><button class="ev free link" data-act="calbook" data-d="${d.day}" data-t="${t}">Free<small>Book this</small></button></td>`;
+      return `<td class="${d.is_today ? 'today' : ''}"><button class="ev free link" data-act="calbook" data-d="${d.day}" data-date="${d.date}" data-t="${t}">Free<small>Book this</small></button></td>`;
     return `<td class="${d.is_today ? 'today' : ''}">${showFree ? '<div class="ev free">Free</div>' : ''}</td>`;
   };
 
@@ -163,7 +179,7 @@ async function calendarView() {
   return `
   <div class="card">
     <h2>${titles[me.role]}</h2>
-    <p class="muted small">Week of ${fmt(cal.days[0].date)} – ${fmt(cal.days[4].date)}. Meetings repeat in the same weekly slot.</p>
+    <p class="muted small">Week of ${fmt(cal.days[0].date)} – ${fmt(cal.days[4].date)}. Showing this week’s meetings.</p>
     ${needFac ? `<label for="calFacSel">${me.role === 'Student' ? 'View a faculty member’s availability' : 'Show'}</label>
       <select id="calFacSel" data-change="calFac">
         <option value="">${me.role === 'Student' ? 'Only my bookings' : 'All faculty'}</option>
@@ -185,11 +201,15 @@ async function calendarView() {
 async function studentView() {
   const facs = list(await api('/api/faculty'));
   if (!ui.fac && facs.length) ui.fac = String(facs[0].user_id);
+  if (!ui.bookDate) ui.bookDate = nextWorkday();
+  ui.day = dayOf(ui.bookDate) || '';
   const mineP = api('/api/appointments' + qs({ student_id: me.user_id }));
-  const [av, mine] = await Promise.all([api('/api/availability' + qs({ faculty_id: ui.fac })), mineP]);
-  const free = (av.slots || {})[ui.day] || [];
+  const [av, mine] = await Promise.all([api('/api/availability' + qs({ faculty_id: ui.fac, date: ui.bookDate })), mineP]);
+  const free = ui.day ? ((av.slots || {})[ui.day] || []) : [];
   const appts = list(mine);
   const curFac = facs.find(f => String(f.user_id) === ui.fac);
+  const noSlots = !ui.day ? 'Appointments are available Monday to Friday. Pick a weekday.'
+    : av.success === false ? esc(av.message) : 'No free slots on this date. Try another date.';
 
   let rsSlots = [];
   const rsAppt = appts.find(a => a.appointment_id === ui.rsId);
@@ -197,7 +217,7 @@ async function studentView() {
 
   const rsForm = a => ui.rsId !== a.appointment_id ? '' : `
     <div class="subform">
-      <p class="small"><b>Move “${a.day} ${a.time_slot}” to another time.</b> Faculty approval is needed before it changes.</p>
+      <p class="small"><b>Move “${whenTxt(a)}” to another time.</b> Faculty approval is needed before it changes.</p>
       <div class="grid2">
         <div><label for="rsDaySel">New day</label>
           <select id="rsDaySel" data-change="rsDay">${DAYS.map(d => `<option ${d === ui.rsDay ? 'selected' : ''}>${d}</option>`).join('')}</select></div>
@@ -213,21 +233,24 @@ async function studentView() {
   return `
   <div class="card">
     <h2>Book a meeting with faculty</h2>
-    <p class="muted small">Only times when the faculty has no class and no other meeting are shown. The faculty will confirm the meeting venue.</p>
+    <p class="muted small">Only times when the faculty has no class and no other meeting on that date are shown. The faculty will confirm the meeting venue.</p>
     <div class="grid2">
       <div><label for="fSel">Faculty</label>
         <select id="fSel" data-change="fac">${facs.map(f => `<option value="${f.user_id}" ${String(f.user_id) === ui.fac ? 'selected' : ''}>${esc(f.name)}</option>`).join('')}</select></div>
-      <div><label for="dSel">Day</label>
-        <select id="dSel" data-change="day">${DAYS.map(d => `<option ${d === ui.day ? 'selected' : ''}>${d}</option>`).join('')}</select></div>
+      <div><label for="bDate">Date <span class="reqstar" aria-hidden="true">*</span></label>
+        <input id="bDate" type="date" min="${todayIso()}" max="${maxDateIso()}" value="${ui.bookDate}" data-change="bookDate" class="${ui.bookErr.date ? 'invalid' : ''}">
+        <small class="muted">${ui.day ? prettyDate(ui.bookDate) : 'Weekends are not available'}</small></div>
     </div>
     ${curFac && curFac.office ? `<p class="small" style="margin:10px 0 0">🏢 <b>${esc(curFac.name)}’s office:</b> ${esc(curFac.office)}</p>` : ''}
-    <div class="slots">${free.map(t => `<button class="slot" data-act="pick" data-t="${t}" aria-pressed="${ui.pick === t}">${t}</button>`).join('') || '<p class="muted">No free slots on this day. Try another day.</p>'}</div>
-    <label for="topic">Project / topic to discuss</label>
-    <textarea id="topic" placeholder="e.g. Review of my ER diagram">${esc(ui.topic)}</textarea>
-    <button class="btn" data-act="book" ${ui.pick ? '' : 'disabled'}>${ui.pick ? `Request ${ui.day} ${ui.pick}` : 'Select a slot'}</button>
+    <div id="slotBox" class="slots ${ui.bookErr.slot ? 'invalid' : ''}">${free.map(t => `<button class="slot" data-act="pick" data-t="${t}" aria-pressed="${ui.pick === t}">${t}</button>`).join('') || `<p class="muted">${noSlots}</p>`}</div>
+    ${ui.bookErr.slot ? '<p class="ferr" id="slotErr">Please select a time slot.</p>' : ''}
+    <label for="topic">Purpose of meeting / topic to discuss <span class="reqstar" aria-hidden="true">*</span></label>
+    <textarea id="topic" class="${ui.bookErr.topic ? 'invalid' : ''}" aria-required="true" placeholder="e.g. Review of my ER diagram">${esc(ui.topic)}</textarea>
+    ${ui.bookErr.topic ? '<p class="ferr" id="topicErr">Purpose of the meeting is required.</p>' : ''}
+    <button class="btn" data-act="book">${ui.pick && ui.day ? `Book appointment · ${ui.day} ${shortDate(ui.bookDate)} · ${ui.pick}` : 'Book appointment'}</button>
   </div>
   <div class="card"><h2>My bookings</h2>
-    ${appts.map(a => `<div class="row"><div><strong>${esc(a.faculty)}</strong> · ${a.day} ${a.time_slot}
+    ${appts.map(a => `<div class="row"><div><strong>${esc(a.faculty)}</strong> · ${whenTxt(a)}
       ${a.venue ? `<span class="venue">📍 ${esc(a.venue)}</span>` : ''}
       ${a.faculty_office ? `<div class="muted small">🏢 Office: ${esc(a.faculty_office)}</div>` : ''}
       <div class="muted small">${esc(a.topic)}</div>
@@ -245,7 +268,7 @@ async function facultyView() {
   const [appts, tt, av, facs] = await Promise.all([
     api('/api/appointments' + qs({ faculty_id: me.user_id })),
     api('/api/timetable'),
-    api('/api/availability' + qs({ faculty_id: me.user_id })),
+    api('/api/availability' + qs({ faculty_id: me.user_id, upcoming: 1 })),
     api('/api/faculty')
   ]);
   const myOffice = (list(facs).find(f => f.user_id === me.user_id) || {}).office || '';
@@ -253,6 +276,7 @@ async function facultyView() {
   const pending = mine.filter(a => a.status === 'Pending');
   const others = mine.filter(a => a.status !== 'Pending');
   const moves = mine.filter(a => a.req_id);
+  const wk = weekIso();
   // Faculty types where to meet (or taps "My office"); the student sees it on their booking.
   const venueBox = a => `<div class="actions" style="width:100%">
       <input id="venue-${a.appointment_id}" type="text" maxlength="100" aria-label="Meeting place"
@@ -262,9 +286,30 @@ async function facultyView() {
       ${myOffice ? `<button class="btn ghost small" data-act="myOffice" data-id="${a.appointment_id}" data-office="${esc(myOffice)}">🏢 My office</button>` : ''}
       ${a.status === 'Pending' ? '' : `<button class="btn small" data-act="setVenue" data-id="${a.appointment_id}">Save place</button>`}
     </div>`;
-  const options = DAYS.flatMap(d => ((av.slots || {})[d] || []).map(t => `<option value="${d}|${t}">${d} ${t}</option>`)).join('');
+  const options = list(av.options).map(o => `<option value="${o.date}|${o.time_slot}">${o.day} ${shortDate(o.date)} · ${o.time_slot}</option>`).join('');
 
-  const row = a => `<div class="row"><div><strong>${esc(a.student)}</strong> · ${a.day} ${a.time_slot}
+  const dIdx = d => DAYS.indexOf(d);
+  const sortedTT = [...myTT].sort((x, y) => dIdx(x.day) - dIdx(y.day) || x.time_slot.localeCompare(y.time_slot));
+  const dr = ui.ttDraft;
+  const ttForm = !ui.editTT ? '' : `
+    <div class="subform" id="ttFormBox" style="margin-top:16px">
+      <p class="small"><b>${ui.editTT === 'new' ? 'Mark a slot as busy / add a class' : 'Edit this slot'}</b>
+        — students will not be able to book it.</p>
+      <div class="grid2">
+        <div><label for="ftDay">Day</label><select id="ftDay">${DAYS.map(d => `<option ${d === dr.ftDay ? 'selected' : ''}>${d}</option>`).join('')}</select></div>
+        <div><label for="ftSlot">Time</label><select id="ftSlot">${SLOTS.map(t => `<option ${t === dr.ftSlot ? 'selected' : ''}>${t}</option>`).join('')}</select></div>
+        <div><label for="ftSub">What is it? <span class="reqstar">*</span></label>
+          <input id="ftSub" type="text" maxlength="80" value="${esc(dr.ftSub)}" placeholder="e.g. Meeting with HR, DBMS class, Lab duty"></div>
+        <div><label for="ftRoom">Room / place (optional)</label>
+          <input id="ftRoom" type="text" maxlength="60" value="${esc(dr.ftRoom)}" placeholder="e.g. 204, HR office"></div>
+      </div>
+      <div class="actions" style="margin-top:12px">
+        <button class="btn small" data-act="ttSave">${ui.editTT === 'new' ? 'Mark as busy' : 'Save changes'}</button>
+        ${ui.editTT === 'new' ? '' : `<button class="btn bad small" data-act="ttDel" data-id="${ui.editTT}">Remove (make slot free)</button>`}
+        <button class="btn ghost small" data-act="ttCancel">Cancel</button></div>
+    </div>`;
+
+  const row = a => `<div class="row"><div><strong>${esc(a.student)}</strong> · ${whenTxt(a)}
       ${a.venue ? `<span class="venue">📍 ${esc(a.venue)}</span>` : ''}
       <div class="muted small">${esc(a.topic)}</div></div>
       <div class="actions">${a.status === 'Pending' ? `
@@ -282,7 +327,7 @@ async function facultyView() {
   <div class="card"><h2>Reschedule requests (${moves.length})</h2>
     <p class="muted small">Students asking to move a booking. Approving moves it right away and notifies them.</p>
     ${moves.map(a => `<div class="row"><div><strong>${esc(a.student)}</strong>
-      <div class="small">${a.day} ${a.time_slot} <span class="arrow">→</span> <b>${a.req_day} ${a.req_time}</b></div>
+      <div class="small">${whenTxt(a)} <span class="arrow">→</span> <b>${a.req_day} ${a.req_time}</b></div>
       <div class="muted small">${a.req_reason ? 'Reason: ' + esc(a.req_reason) : esc(a.topic)}</div></div>
       <div class="actions"><button class="btn ok small" data-act="rqok" data-id="${a.req_id}">Approve</button>
       <button class="btn bad small" data-act="rqno" data-id="${a.req_id}">Decline</button></div></div>`).join('')
@@ -290,14 +335,15 @@ async function facultyView() {
   <div class="card"><h2>Booking requests (${pending.length})</h2>
     ${pending.map(row).join('') || '<p class="muted">No pending requests.</p>'}</div>
   <div class="card"><h2>My availability this week</h2>
-    <p class="muted small">Classes come from the timetable set by the admin. Everything else is open for student bookings.</p>
+    <p class="muted small">Click a <b>Free</b> slot to mark it busy (e.g. “Meeting with HR”), or click a class / busy slot to edit or remove it. Free slots are open for student bookings. Slots with a student meeting are changed from the requests below.</p>
     <div class="scroll"><table><thead><tr><th>Time</th>${DAYS.map(d => `<th>${d}</th>`).join('')}</tr></thead><tbody>
     ${SLOTS.map(t => `<tr><th>${t}</th>${DAYS.map(d => {
       const c = myTT.find(x => x.day === d && x.time_slot === t);
-      if (c) return `<td class="class">${esc(c.subject)}<br>${esc(c.room)}</td>`;
-      const b = mine.find(x => x.day === d && x.time_slot === t && ACTIVE.includes(x.status));
-      return b ? `<td class="booked">${esc(b.student)}<br>${b.status}${b.venue ? '<br>📍 ' + esc(b.venue) : ''}</td>` : '<td class="free">Free</td>';
-    }).join('')}</tr>`).join('')}</tbody></table></div></div>
+      if (c) return `<td class="class"><button class="cellbtn" data-act="ttEdit" data-id="${c.timetable_id}" data-day="${esc(c.day)}" data-t="${esc(c.time_slot)}" data-sub="${esc(c.subject)}" data-room="${esc(c.room)}" title="Edit this slot">${esc(c.subject)}${c.room ? '<br>' + esc(c.room) : ''}<small>✏️ Edit</small></button></td>`;
+      const b = mine.find(x => x.day === d && x.time_slot === t && ACTIVE.includes(x.status) && (!x.appt_date || wk.includes(x.appt_date)));
+      return b ? `<td class="booked">${esc(b.student)}<br>${b.status}${b.venue ? '<br>📍 ' + esc(b.venue) : ''}</td>` : `<td class="free"><button class="cellbtn" data-act="ttFree" data-day="${d}" data-t="${t}" title="Mark ${d} ${t} as busy">Free<small>+ Mark busy</small></button></td>`;
+    }).join('')}</tr>`).join('')}</tbody></table></div>
+    ${ttForm}</div>
   <div class="card"><h2>All requests</h2>${others.map(row).join('') || '<p class="muted">Nothing here yet.</p>'}</div>`;
 }
 
@@ -306,18 +352,35 @@ async function adminView() {
   if (!facs.some(f => String(f.user_id) === String(ui.admFac))) ui.admFac = facs.length ? String(facs[0].user_id) : '';
   const fac = facs.find(f => String(f.user_id) === String(ui.admFac));
   const tt = fac ? list(await api('/api/timetable' + qs({ faculty_id: fac.user_id }))) : [];
+  const students = list((await api('/api/admin/students' + qs({ admin_id: me.user_id }))).students);
+  const semOpts = sel => ['1', '2', '3', '4', '5', '6', '7', '8'].map(s => `<option value="${s}" ${String(sel) === s ? 'selected' : ''}>${s}</option>`).join('');
   return `
   <div class="card"><h2>Add user</h2>
-    <p class="muted small">Create a faculty or student account. For faculty, add the office where students can find them.</p>
+    <p class="muted small">Create a faculty or student account. Faculty need an office. For students, name, email, course, semester and section are all compulsory.</p>
     <div class="grid2">
       <div><label for="uName">Name</label><input id="uName" type="text"></div>
       <div><label for="uEmail">Email</label><input id="uEmail" type="email"></div>
       <div><label for="uPass">Password</label><input id="uPass" type="text"></div>
-      <div><label for="uRole">Role</label><select id="uRole"><option>Faculty</option><option>Student</option></select></div>
+      <div><label for="uRole">Role</label><select id="uRole" data-change="uRole"><option>Faculty</option><option>Student</option></select></div>
     </div>
     <div id="uOfficeWrap"><label for="uOffice">Office (shown to students)</label>
       <input id="uOffice" type="text" placeholder="e.g. Staff block, Room 12"></div>
+    <div id="uClassWrap" class="aud3" hidden>
+      <div><label for="uCourse">Course <span class="reqstar">*</span></label><input id="uCourse" type="text" maxlength="60" placeholder="e.g. B.Tech CSE"></div>
+      <div><label for="uSem">Semester <span class="reqstar">*</span></label><select id="uSem">${semOpts('')}</select></div>
+      <div><label for="uSec">Section <span class="reqstar">*</span></label><input id="uSec" type="text" maxlength="10" placeholder="e.g. A"></div>
+    </div>
     <button class="btn" data-act="addUser">Add user</button>
+  </div>
+  <div class="card"><h2>Student classes</h2>
+    <p class="muted small">Course, semester and section decide which shared documents a student can see.</p>
+    ${students.map(s => `<div class="row"><div><strong>${esc(s.name)}</strong><div class="muted small">${esc(s.email)}</div></div>
+      <div class="actions">
+        <input id="stCourse-${s.user_id}" type="text" maxlength="60" value="${esc(s.course)}" placeholder="Course" aria-label="Course" style="width:150px">
+        <select id="stSem-${s.user_id}" aria-label="Semester" style="width:90px"><option value="">Sem</option>${semOpts(s.semester)}</select>
+        <input id="stSec-${s.user_id}" type="text" maxlength="10" value="${esc(s.section)}" placeholder="Section" aria-label="Section" style="width:100px">
+        <button class="btn small" data-act="saveStudent" data-id="${s.user_id}">Save</button></div></div>`).join('')
+      || '<p class="muted">No students yet.</p>'}
   </div>
   <div class="card"><h2>Faculty timetable</h2>
     ${fac ? `
@@ -356,6 +419,19 @@ async function documentsView() {
   const canUpload = me.role === 'Faculty' || me.role === 'Admin';
   const r = await api('/api/documents' + qs({ user_id: me.user_id, ...(ui.docQ ? { q: ui.docQ } : {}) }));
   const docs = list(r.documents);
+  const audPicker = `
+    <label>Who can see this?</label>
+    <div class="radios">
+      <label><input type="radio" name="docAud" data-change="docAud" value="all" ${ui.docAud === 'all' ? 'checked' : ''}> Everyone</label>
+      <label><input type="radio" name="docAud" data-change="docAud" value="some" ${ui.docAud === 'some' ? 'checked' : ''}> Selected course / semester / section</label>
+    </div>
+    ${ui.docAud === 'some' ? `<div class="aud3">
+      <div><label for="docCourse">Course</label><input id="docCourse" type="text" maxlength="60" value="${esc(ui.docCourse)}" placeholder="e.g. B.Tech CSE"></div>
+      <div><label for="docSem">Semester</label><input id="docSem" type="text" maxlength="10" value="${esc(ui.docSem)}" placeholder="e.g. 3"></div>
+      <div><label for="docSec">Section</label><input id="docSec" type="text" maxlength="10" value="${esc(ui.docSec)}" placeholder="e.g. A"></div>
+    </div>
+    <p class="muted small">Type who may see this note. Leave a box empty to include all (for example, only a course = every student of that course).</p>` : ''}`;
+
   return `
   ${canUpload ? `<div class="card"><h2>Upload a document</h2>
     <p class="muted small">Share notes, slides or assignments with students. PDF, Word, PowerPoint, Excel, text, images or zip, up to 10 MB.</p>
@@ -365,6 +441,7 @@ async function documentsView() {
     </div>
     <label for="docDesc">Description (optional)</label>
     <textarea id="docDesc">${esc(ui.docDesc)}</textarea>
+    ${audPicker}
     <label for="docFile">File</label>
     <div class="file-pick"><input id="docFile" type="file" accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.csv,.txt,.md,.png,.jpg,.jpeg,.zip">
       ${ui.docFile ? `<div class="small">Selected: <b>${esc(ui.docFile.name)}</b> (${fmtSize(ui.docFile.size)})</div>` : ''}</div>
@@ -373,7 +450,8 @@ async function documentsView() {
       <p class="muted small">${docs.length} document${docs.length === 1 ? '' : 's'}</p></div>
       <input id="docQ" class="search" type="search" placeholder="Search title, subject or faculty" value="${esc(ui.docQ)}" aria-label="Search documents"></div>
     ${docs.map(d => `<div class="row doc"><span class="doc-icon">📄</span><div><strong>${esc(d.title)}</strong>
-      <div class="muted small">${esc(d.uploader)}${d.subject ? ' · ' + esc(d.subject) : ''} · ${esc(d.filename)} · ${fmtSize(d.size_bytes)} · ${ago(d.uploaded_at)}</div>
+      <div class="muted small">${esc(d.uploader)}${d.subject ? ' · ' + esc(d.subject) : ''} · ${esc(d.filename)} · ${fmtSize(d.size_bytes)} · ${ago(d.uploaded_at)}
+        ${d.audience ? `<span class="audtag">🔒 ${esc(d.audience)}</span>` : ''}</div>
       ${d.description ? `<div class="small">${esc(d.description)}</div>` : ''}</div>
       <div class="actions"><a class="btn small" href="${API}/api/documents/download${qs({ document_id: d.document_id, user_id: me.user_id })}" download>Download</a>
       ${me.role === 'Admin' || d.uploader_id === me.user_id ? `<button class="btn ghost small" data-act="delDoc" data-id="${d.document_id}">Delete</button>` : ''}</div></div>`).join('')
@@ -404,20 +482,36 @@ async function chatView() {
 `;
 }
 
+function focusTTForm() {
+  const box = $('ttFormBox'); if (!box) return;
+  box.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  const i = $('ftSub'); if (i) i.focus();
+}
+
 async function run(promise, okMsg) {
   const res = await promise;
   toast(res.success ? (okMsg || res.message) : res.message);
-  if (res.success) { ui.pick = null; ui.resId = null; ui.topic = ''; ui.rsId = null; ui.rsPick = null; ui.rsReason = ''; ui.venueDraft = {}; }
+  if (res.success) { ui.pick = null; ui.resId = null; ui.topic = ''; ui.rsId = null; ui.rsPick = null; ui.rsReason = ''; ui.venueDraft = {}; ui.bookErr = {}; ui.editTT = null; ui.ttDraft = {}; }
   render();
   pollNotifs(true);
 }
 
 $('content').addEventListener('input', e => {
-  if (e.target.id === 'topic') ui.topic = e.target.value;
+  if (e.target.id === 'topic') {
+    ui.topic = e.target.value;
+    if (ui.bookErr.topic && e.target.value.trim()) {
+      ui.bookErr.topic = false; e.target.classList.remove('invalid');
+      const m = $('topicErr'); if (m) m.remove();
+    }
+  }
+  if (e.target.id.startsWith('ft')) ui.ttDraft[e.target.id] = e.target.value;
   if (e.target.id === 'rsReason') ui.rsReason = e.target.value;
   if (e.target.id === 'docTitle') ui.docTitle = e.target.value;
   if (e.target.id === 'docSubject') ui.docSubject = e.target.value;
   if (e.target.id === 'docDesc') ui.docDesc = e.target.value;
+  if (e.target.id === 'docCourse') ui.docCourse = e.target.value;
+  if (e.target.id === 'docSem') ui.docSem = e.target.value;
+  if (e.target.id === 'docSec') ui.docSec = e.target.value;
   if (e.target.id === 'chatMessage') ui.chatMessage = e.target.value;
   if (e.target.id.startsWith('venue-')) ui.venueDraft[e.target.id.slice(6)] = e.target.value;
   if (e.target.id === 'docQ') {   // search as you type, keep the caret in the box
@@ -429,13 +523,14 @@ $('content').addEventListener('input', e => {
 
 $('content').addEventListener('change', e => {
   const c = e.target.dataset.change;
-  if (c === 'fac') { ui.fac = e.target.value; ui.pick = null; render(); }
-  if (c === 'day') { ui.day = e.target.value; ui.pick = null; render(); }
+  if (c === 'fac') { ui.fac = e.target.value; ui.pick = null; ui.bookErr = {}; render(); }
+  if (c === 'bookDate') { ui.bookDate = e.target.value || nextWorkday(); ui.pick = null; ui.bookErr.date = false; render(); }
   if (c === 'rsDay') { ui.rsDay = e.target.value; ui.rsPick = null; render(); }
   if (c === 'calFac') { ui.calFac = e.target.value; render(); }
   if (c === 'admFac') { ui.admFac = e.target.value; render(); }
-  if (e.target.id === 'uRole') $('uOfficeWrap').hidden = e.target.value !== 'Faculty';
+  if (e.target.id === 'uRole') { const stu = e.target.value === 'Student'; $('uOfficeWrap').hidden = stu; $('uClassWrap').hidden = !stu; }
   if (c === 'chatContact') { ui.chatContact = e.target.value; ui.chatMessage = ''; render(); }
+  if (c === 'docAud') { ui.docAud = e.target.value; render(); }
   if (e.target.id === 'docFile') { ui.docFile = e.target.files[0] || null; render(); }
 });
 
@@ -443,10 +538,18 @@ $('content').addEventListener('click', async e => {
   const b = e.target.closest('button[data-act]'); if (!b) return;
   const act = b.dataset.act, id = Number(b.dataset.id), v = x => $(x).value.trim();
 
-  if (act === 'pick') { ui.pick = ui.pick === b.dataset.t ? null : b.dataset.t; render(); }
+  if (act === 'pick') { ui.pick = ui.pick === b.dataset.t ? null : b.dataset.t; ui.bookErr.slot = false; render(); }
   else if (act === 'book') {
-    if (!v('topic')) return toast('Add a topic for the meeting');
-    run(api('/api/appointments', 'POST', { student_id: me.user_id, faculty_id: Number(ui.fac), day: ui.day, time_slot: ui.pick, topic: v('topic') }));
+    ui.topic = v('topic');
+    ui.bookErr = { date: !ui.bookDate || !ui.day, slot: !ui.pick, topic: !ui.topic };
+    if (ui.bookErr.date || ui.bookErr.slot || ui.bookErr.topic) {
+      toast('Please fill in the fields marked in red');
+      await render();
+      const bad = document.querySelector('#content .invalid');
+      if (bad) { bad.scrollIntoView({ block: 'center', behavior: 'smooth' }); if (bad.id === 'topic') bad.focus(); }
+      return;
+    }
+    run(api('/api/appointments', 'POST', { student_id: me.user_id, faculty_id: Number(ui.fac), date: ui.bookDate, day: ui.day, time_slot: ui.pick, topic: ui.topic }));
   }
   else if (act === 'cancel') run(api('/api/appointments/cancel', 'POST', { appointment_id: id, user_id: me.user_id }));
   else if (act === 'accept') {
@@ -457,9 +560,9 @@ $('content').addEventListener('click', async e => {
   else if (act === 'reject') run(api('/api/appointments/respond', 'POST', { faculty_id: me.user_id, appointment_id: id, action: 'Rejected' }));
   else if (act === 'resform') { ui.resId = ui.resId === id ? null : id; render(); }
   else if (act === 'resok') {
-    const [day, time_slot] = ($('resSel').value || '|').split('|');
-    if (!day) return toast('No free slots to move to');
-    run(api('/api/appointments/reschedule', 'POST', { faculty_id: me.user_id, appointment_id: id, day, time_slot }));
+    const [date, time_slot] = ($('resSel').value || '|').split('|');
+    if (!date) return toast('No free slots to move to');
+    run(api('/api/appointments/reschedule', 'POST', { faculty_id: me.user_id, appointment_id: id, date, time_slot }));
   }
 
   else if (act === 'rsform') { ui.rsId = ui.rsId === id ? null : id; ui.rsPick = null; ui.rsReason = ''; render(); }
@@ -473,11 +576,15 @@ $('content').addEventListener('click', async e => {
   else if (act === 'rqno') run(api('/api/appointments/reschedule-respond', 'POST', { faculty_id: me.user_id, request_id: id, action: 'Declined' }));
 
   else if (act === 'calbook') {
-    ui.fac = String(ui.calFac); ui.day = b.dataset.d; ui.pick = b.dataset.t; ui.view = 'dashboard'; render();
+    ui.fac = String(ui.calFac); ui.day = b.dataset.d; ui.bookDate = b.dataset.date || nextWorkday(); ui.pick = b.dataset.t; ui.view = 'dashboard'; render();
   }
 
   else if (act === 'readOne') { await api('/api/notifications/read', 'POST', { user_id: me.user_id, notification_id: id }); render(); }
-  else if (act === 'readAll') { await api('/api/notifications/read', 'POST', { user_id: me.user_id }); render(); }
+  else if (act === 'readAll') {
+    const res = await api('/api/notifications/read', 'POST', { user_id: me.user_id });
+    toast(res.message);   // e.g. "All notifications are already marked as read"
+    render();
+  }
 
   else if (act === 'sendChat') {
     if (!ui.chatContact) return toast('Choose a contact first');
@@ -502,20 +609,53 @@ $('content').addEventListener('click', async e => {
   else if (act === 'addClass') {
     run(api('/api/timetable', 'POST', { admin_id: me.user_id, faculty_id: Number(ui.admFac), day: $('tDay').value, time_slot: $('tSlot').value, subject: v('tSub'), room: v('tRoom') }));
   }
+  else if (act === 'ttFree') {
+    ui.editTT = 'new'; ui.ttDraft = { ftDay: b.dataset.day, ftSlot: b.dataset.t, ftSub: '', ftRoom: '' };
+    await render(); focusTTForm();
+  }
+  else if (act === 'ttEdit') {
+    ui.editTT = id;
+    ui.ttDraft = { ftDay: b.dataset.day, ftSlot: b.dataset.t, ftSub: b.dataset.sub, ftRoom: b.dataset.room };
+    await render(); focusTTForm();
+  }
+  else if (act === 'ttCancel') { ui.editTT = null; ui.ttDraft = {}; render(); }
+  else if (act === 'ttSave') {
+    const f = { day: $('ftDay').value, time_slot: $('ftSlot').value, subject: v('ftSub'), room: v('ftRoom') };
+    if (!f.subject) {
+      toast('Please describe what the slot is for');
+      const i = $('ftSub'); i.classList.add('invalid'); i.focus();
+      return;
+    }
+    if (ui.editTT === 'new') run(api('/api/timetable', 'POST', { user_id: me.user_id, faculty_id: me.user_id, ...f }));
+    else run(api('/api/timetable/update', 'POST', { user_id: me.user_id, timetable_id: ui.editTT, ...f }));
+  }
+  else if (act === 'ttDel') {
+    if (confirm('Remove this class from your timetable?')) run(api('/api/timetable', 'DELETE', { user_id: me.user_id, timetable_id: id }));
+  }
   else if (act === 'delClass') run(api('/api/timetable', 'DELETE', { admin_id: me.user_id, timetable_id: id }));
   else if (act === 'addUser') {
-    run(api('/api/admin/users', 'POST', { admin_id: me.user_id, name: v('uName'), email: v('uEmail'), password: $('uPass').value, role: $('uRole').value, office: $('uOffice') ? v('uOffice') : '' }));
+    const role = $('uRole').value;
+    const f = { name: v('uName'), email: v('uEmail'), password: $('uPass').value, role, office: $('uOffice') ? v('uOffice') : '',
+      course: $('uCourse') ? v('uCourse') : '', semester: $('uSem') ? $('uSem').value : '', section: $('uSec') ? v('uSec') : '' };
+    if (role === 'Student' && !(f.name && f.email && f.course && f.semester && f.section))
+      return toast('Filling name, email, course, semester and section is compulsory for students');
+    run(api('/api/admin/users', 'POST', { admin_id: me.user_id, ...f }));
+  }
+  else if (act === 'saveStudent') {
+    run(api('/api/admin/student-class', 'POST', { admin_id: me.user_id, student_id: id, course: v('stCourse-' + id), semester: $('stSem-' + id).value, section: v('stSec-' + id) }));
   }
   else if (act === 'upload') {
     if (!ui.docTitle.trim()) return toast('Give the document a title');
     if (!ui.docFile) return toast('Choose a file to upload');
     if (ui.docFile.size > 10 * 1024 * 1024) return toast('File is larger than 10 MB');
+    if (ui.docAud === 'some' && !(ui.docCourse.trim() || ui.docSem.trim() || ui.docSec.trim())) return toast('Enter a course, semester or section');
     b.disabled = true; toast('Uploading…');
     let data; try { data = await toB64(ui.docFile); } catch { b.disabled = false; return toast('Could not read that file'); }
+    const some = ui.docAud === 'some';
     const res = await api('/api/documents', 'POST', { user_id: me.user_id, title: ui.docTitle, subject: ui.docSubject,
-      description: ui.docDesc, filename: ui.docFile.name, data });
+      description: ui.docDesc, filename: ui.docFile.name, data, restricted: some, course: some ? ui.docCourse : '', semester: some ? ui.docSem : '', section: some ? ui.docSec : '' });
     toast(res.message);
-    if (res.success) { ui.docTitle = ui.docSubject = ui.docDesc = ''; ui.docFile = null; }
+    if (res.success) { ui.docTitle = ui.docSubject = ui.docDesc = ''; ui.docFile = null; ui.docAud = 'all'; ui.docCourse = ui.docSem = ui.docSec = ''; }
     render(); pollNotifs(true);
   }
   else if (act === 'delDoc') {
