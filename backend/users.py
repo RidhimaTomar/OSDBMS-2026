@@ -20,9 +20,19 @@ def add_user(data):
     password = data.get("password")
     role = data.get("role")
     office = (data.get("office") or "").strip()
+    course = str(data.get("course") or "").strip()[:60]
+    semester = str(data.get("semester") or "").strip()[:10]
+    section = str(data.get("section") or "").strip().upper()[:10]
 
     if not is_admin(admin_id):
         return {"success": False, "message": "Only admin can add users"}
+
+    if role == "Student" and not all(
+            str(x or "").strip() for x in (name, email, course, semester, section)):
+        return {
+            "success": False,
+            "message": "Filling name, email, course, semester and section is compulsory for students"
+        }
 
     if not name or not email or not password or role not in ["Faculty", "Student"]:
         return {
@@ -34,8 +44,13 @@ def add_user(data):
 
     try:
         con.execute(
-            "INSERT INTO users(name, email, password, role, office) VALUES(?,?,?,?,?)",
-            (name, email, hash_password(password), role, office if role == "Faculty" else "")
+            "INSERT INTO users(name, email, password, role, office, course, semester, section) "
+            "VALUES(?,?,?,?,?,?,?,?)",
+            (name, email, hash_password(password), role,
+             office if role == "Faculty" else "",
+             course if role == "Student" else "",
+             semester if role == "Student" else "",
+             section if role == "Student" else "")
         )
         con.commit()
         return {
@@ -58,7 +73,7 @@ def get_users(data):
 
     con = get_connection()
     rows = con.execute(
-        "SELECT user_id, name, email, role FROM users "
+        "SELECT user_id, name, email, role, course, semester, section FROM users "
         "WHERE role IN ('Faculty', 'Student') ORDER BY role, name"
     ).fetchall()
     con.close()
@@ -125,6 +140,46 @@ def set_faculty_office(data):
         if not cur.rowcount:
             return {"success": False, "message": "Faculty not found"}
         return {"success": True, "message": "Office updated"}
+    finally:
+        con.close()
+
+
+def set_student_class(data):
+    """Admin changes a student's course, semester and section."""
+    if not is_admin(data.get("admin_id")):
+        return {"success": False, "message": "Only admin can set student classes"}
+
+    course = str(data.get("course") or "").strip()[:60]
+    semester = str(data.get("semester") or "").strip()[:10]
+    section = str(data.get("section") or "").strip().upper()[:10]
+    if not course or not semester or not section:
+        return {"success": False, "message": "Course, semester and section are compulsory"}
+
+    con = get_connection()
+    try:
+        cur = con.execute(
+            "UPDATE users SET course=?, semester=?, section=? WHERE user_id=? AND role='Student'",
+            (course, semester, section, data.get("student_id")))
+        con.commit()
+        if not cur.rowcount:
+            return {"success": False, "message": "Student not found"}
+        return {"success": True, "message": "Student class saved"}
+    finally:
+        con.close()
+
+
+def get_students(params):
+    """Admin list of students with their semester and section."""
+    if not is_admin(params.get("admin_id")):
+        return {"success": False, "message": "Only admin can view students"}
+
+    con = get_connection()
+    try:
+        rows = con.execute(
+            "SELECT user_id, name, email, course, semester, section "
+            "FROM users WHERE role='Student' ORDER BY name"
+        ).fetchall()
+        return {"success": True, "students": [dict(r) for r in rows]}
     finally:
         con.close()
 
