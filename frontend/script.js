@@ -8,7 +8,6 @@ const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const qs = o => '?' + new URLSearchParams(o);
 
-// ---- date helpers ----
 const iso = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
 const todayIso = () => iso(new Date());
 const maxDateIso = () => { const d = new Date(); d.setDate(d.getDate() + 60); return iso(d); };
@@ -67,14 +66,12 @@ $('loginForm').onsubmit = async e => {
   $('loginForm').reset(); $('authMsg').textContent = '';
   start();
 };
-const logout = () => {
+$('logoutBtn').onclick = () => {
   sessionStorage.removeItem('campus_user'); me = null;
   clearInterval(pollTimer);
   ui = freshUi();
   $('appView').hidden = true; $('authView').hidden = false; toast('You have been logged out');
 };
-$('logoutBtn').onclick = logout;
-$('logoutTop').onclick = logout;
 
 function start() {
   $('authView').hidden = true; $('appView').hidden = false;
@@ -85,7 +82,7 @@ function start() {
   document.querySelectorAll('.navbtn[data-view]').forEach(b => b.hidden = admin && b.dataset.view !== 'dashboard');
   render();
   clearInterval(pollTimer);
-  if (admin) { setBadge(0); return; }   // admin has no notifications
+  if (admin) { setBadge(0); return; }   
   pollNotifs(true);
   pollTimer = setInterval(() => pollNotifs(false), 10000);
 }
@@ -254,6 +251,7 @@ async function studentView() {
       ${a.venue ? `<span class="venue">📍 ${esc(a.venue)}</span>` : ''}
       ${a.faculty_office ? `<div class="muted small">🏢 Office: ${esc(a.faculty_office)}</div>` : ''}
       <div class="muted small">${esc(a.topic)}</div>
+      ${a.status === 'Pending' && a.queue_position ? `<div class="queue small">🕒 Queue #${a.queue_position} of ${a.queue_size} · ${a.requests_ahead ? a.requests_ahead + ' request(s) ahead of you' : 'first in line'} (first come, first served)</div>` : ''}
       ${a.req_id ? `<div class="req small">🔁 Reschedule requested → <b>${a.req_day} ${a.req_time}</b>${a.req_reason ? ' · ' + esc(a.req_reason) : ''} — waiting for faculty</div>` : ''}</div>
       <div class="actions"><span class="tag ${a.status}">${a.status}</span>
       ${a.req_id ? `<button class="btn ghost small" data-act="rswithdraw" data-id="${a.req_id}">Withdraw request</button>`
@@ -273,7 +271,7 @@ async function facultyView() {
   ]);
   const myOffice = (list(facs).find(f => f.user_id === me.user_id) || {}).office || '';
   const mine = list(appts), myTT = list(tt).filter(t => t.faculty_id === me.user_id);
-  const pending = mine.filter(a => a.status === 'Pending');
+  const pending = mine.filter(a => a.status === 'Pending').sort((x, y) => (x.queue_position || 0) - (y.queue_position || 0));
   const others = mine.filter(a => a.status !== 'Pending');
   const moves = mine.filter(a => a.req_id);
   const wk = weekIso();
@@ -309,12 +307,12 @@ async function facultyView() {
         <button class="btn ghost small" data-act="ttCancel">Cancel</button></div>
     </div>`;
 
-  const row = a => `<div class="row"><div><strong>${esc(a.student)}</strong> · ${whenTxt(a)}
+  const row = a => `<div class="row"><div>${a.status === 'Pending' && a.queue_position ? `<span class="tag Pending">#${a.queue_position}</span> ` : ''}<strong>${esc(a.student)}</strong> · ${whenTxt(a)}
       ${a.venue ? `<span class="venue">📍 ${esc(a.venue)}</span>` : ''}
       <div class="muted small">${esc(a.topic)}</div></div>
       <div class="actions">${a.status === 'Pending' ? `
-        <button class="btn ok small" data-act="accept" data-id="${a.appointment_id}">Accept</button>
-        <button class="btn bad small" data-act="reject" data-id="${a.appointment_id}">Reject</button>
+        <button class="btn ok small" data-act="accept" data-id="${a.appointment_id}" ${a.requests_ahead ? 'disabled title="Answer earlier requests first (FCFS)"' : ''}>Accept</button>
+        <button class="btn bad small" data-act="reject" data-id="${a.appointment_id}" ${a.requests_ahead ? 'disabled title="Answer earlier requests first (FCFS)"' : ''}>Reject</button>
         <button class="btn ghost small" data-act="resform" data-id="${a.appointment_id}">Reschedule</button>`
       : `<span class="tag ${a.status}">${a.status}</span>
          ${ACTIVE.includes(a.status) ? `<button class="btn ghost small" data-act="resform" data-id="${a.appointment_id}">Reschedule</button>` : ''}`}</div>
@@ -333,6 +331,7 @@ async function facultyView() {
       <button class="btn bad small" data-act="rqno" data-id="${a.req_id}">Decline</button></div></div>`).join('')
       || '<p class="muted">No reschedule requests.</p>'}</div>
   <div class="card"><h2>Booking requests (${pending.length})</h2>
+    <p class="muted small">Requests are answered first come, first served: the oldest request (#1) must be handled before the next one.</p>
     ${pending.map(row).join('') || '<p class="muted">No pending requests.</p>'}</div>
   <div class="card"><h2>My availability this week</h2>
     <p class="muted small">Click a <b>Free</b> slot to mark it busy (e.g. “Meeting with HR”), or click a class / busy slot to edit or remove it. Free slots are open for student bookings. Slots with a student meeting are changed from the requests below.</p>
@@ -420,7 +419,7 @@ async function documentsView() {
   const r = await api('/api/documents' + qs({ user_id: me.user_id, ...(ui.docQ ? { q: ui.docQ } : {}) }));
   const docs = list(r.documents);
   const audPicker = `
-    <label>Who can see this?</label>
+    <label>Shared with : </label>
     <div class="radios">
       <label><input type="radio" name="docAud" data-change="docAud" value="all" ${ui.docAud === 'all' ? 'checked' : ''}> Everyone</label>
       <label><input type="radio" name="docAud" data-change="docAud" value="some" ${ui.docAud === 'some' ? 'checked' : ''}> Selected course / semester / section</label>
@@ -430,7 +429,7 @@ async function documentsView() {
       <div><label for="docSem">Semester</label><input id="docSem" type="text" maxlength="10" value="${esc(ui.docSem)}" placeholder="e.g. 3"></div>
       <div><label for="docSec">Section</label><input id="docSec" type="text" maxlength="10" value="${esc(ui.docSec)}" placeholder="e.g. A"></div>
     </div>
-    <p class="muted small">Type who may see this note. Leave a box empty to include all (for example, only a course = every student of that course).</p>` : ''}`;
+    <p class="muted small"></p>` : ''}`;
 
   return `
   ${canUpload ? `<div class="card"><h2>Upload a document</h2>
