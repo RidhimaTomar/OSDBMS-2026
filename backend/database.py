@@ -142,6 +142,12 @@ def init_db():
     if "appt_date" not in cols:
         cur.execute("ALTER TABLE appointments ADD COLUMN appt_date TEXT DEFAULT ''")
 
+    # ---- FCFS arrival time (when the request was made) ----
+    cols = [r["name"] for r in cur.execute("PRAGMA table_info(appointments)")]
+    if "requested_at" not in cols:
+        cur.execute("ALTER TABLE appointments ADD COLUMN requested_at TEXT DEFAULT ''")
+    # Older bookings have no arrival time: they keep their original order via appointment_id.
+
     # One active booking per faculty + slot + DATE (the old index ignored the date).
     cur.execute("DROP INDEX IF EXISTS uq_active_slot")
     cur.execute("""
