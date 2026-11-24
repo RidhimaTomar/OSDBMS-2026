@@ -14,7 +14,7 @@ Unified Academic Scheduling and Management is a web-based campus management syst
 - **Calendar:** View academic schedules and appointments.
 - **Document Sharing:** Support document upload and download.
 - **Student–Faculty Chat:** Facilitate academic communication.
-- **OS Algorithm Simulations:** Demonstrate CPU scheduling, synchronization, deadlock detection, page replacement, and disk scheduling.
+- **FCFS Appointment Queue:** Booking requests for each faculty member are handled first come, first served using the FCFS scheduling algorithm.
 
 ## Technologies Used
 
@@ -26,9 +26,8 @@ Unified Academic Scheduling and Management is a web-based campus management syst
 
 ## Operating Systems Concepts
 
-- CPU Scheduling: FCFS, Priority Scheduling, Round Robin
-- Process Synchronization: Locks, mutual exclusion, critical sections, race conditions
-- Deadlock Detection
+- CPU Scheduling: First-Come-First-Served (FCFS) - each faculty member is the "CPU", each pending appointment request is a "process" served in arrival order (`backend/os_engine/fcfs.py`)
+- Process Synchronization: Locks and mutual exclusion protect the booking critical section
 - File I/O and resource management
 
 ## DBMS Concepts
@@ -54,7 +53,7 @@ The core database initialization script declares five tables:
 
 ## Conclusion
 
-Our project integrates practical campus-management functionality with OS algorithm simulations and relational database operations. It demonstrates synchronization, resource allocation, scheduling, data integrity, and transaction management in a single project.
+Our project integrates practical campus-management functionality with OS algorithm simulations and relational database operations. It demonstrates FCFS scheduling, synchronization, data integrity, and transaction management in a single project.
 
 ## Repository
 
