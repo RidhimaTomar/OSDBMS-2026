@@ -3,6 +3,7 @@ import threading
 from datetime import date as _date, timedelta
 from database import get_connection
 from notifications import notify
+from os_engine.fcfs import fcfs_queue
 
 booking_lock = threading.Lock()
 
@@ -10,6 +11,9 @@ DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri"]
 TIME_SLOTS = ["09:00", "10:00", "11:00", "12:00", "14:00", "15:00", "16:00"]
 ACTIVE = "('Pending', 'Accepted', 'Rescheduled')"
 MAX_DAYS_AHEAD = 60
+
+# FCFS: a faculty member must answer pending requests in the order they arrived.
+FCFS_STRICT = True
 
 
 def clean_venue(value):
@@ -89,6 +93,25 @@ def appt_info(con, appointment_id):
     """, (appointment_id,)).fetchone()
 
 
+def pending_queue(con, faculty_id=None):
+    """FCFS queue of Pending requests, one queue per faculty.
+    Returns {appointment_id: {position, size, ahead, wait_minutes, turnaround_minutes}}."""
+    sql = "SELECT appointment_id, faculty_id, requested_at FROM appointments WHERE status='Pending'"
+    args = []
+    if faculty_id is not None:
+        sql += " AND faculty_id=?"
+        args.append(faculty_id)
+
+    by_faculty = {}
+    for r in con.execute(sql, args).fetchall():
+        by_faculty.setdefault(r["faculty_id"], []).append(dict(r))
+
+    queue = {}
+    for rows in by_faculty.values():
+        queue.update(fcfs_queue(rows))
+    return queue
+
+
 def close_open_requests(con, appointment_id, new_status):
     con.execute("""
         UPDATE reschedule_requests SET status=?
@@ -121,17 +144,25 @@ def book_appointment(data):
 
             cur = con.execute("""
                 INSERT INTO appointments
-                (student_id, faculty_id, day, time_slot, appt_date, topic)
-                VALUES (?, ?, ?, ?, ?, ?)
+                (student_id, faculty_id, day, time_slot, appt_date, topic, requested_at)
+                VALUES (?, ?, ?, ?, ?, ?, strftime('%Y-%m-%d %H:%M:%f', 'now'))
             """, (student_id, faculty_id, day, time_slot, appt_date, topic))
+
+            # FCFS: this request joins the back of the faculty's queue.
+            place = pending_queue(con, faculty_id).get(cur.lastrowid, {})
 
             info = appt_info(con, cur.lastrowid)
             notify(con, faculty_id, "booking",
                    f"{info['student']} requested a meeting on {when(day, time_slot, appt_date)}"
-                   + (f" - {topic}" if topic else ""), cur.lastrowid)
+                   + (f" - {topic}" if topic else "")
+                   + (f" (queue #{place['position']})" if place else ""), cur.lastrowid)
 
             con.commit()
-            return {"success": True, "message": "Request sent to faculty"}
+            msg = "Request sent to faculty"
+            if place:
+                msg += (f" - you are #{place['position']} in the queue"
+                        if place["ahead"] else " - you are first in the queue")
+            return {"success": True, "message": msg, "queue_position": place.get("position")}
 
         except sqlite3.IntegrityError:
             con.rollback()
@@ -172,9 +203,25 @@ def get_appointments(params=None):
 
     con = get_connection()
     rows = con.execute(sql, args).fetchall()
+    queue = pending_queue(con)
     con.close()
 
-    return [dict(row) for row in rows]
+    result = []
+    for row in rows:
+        d = dict(row)
+        q = queue.get(d["appointment_id"]) if d["status"] == "Pending" else None
+        d["queue_position"] = q["position"] if q else None
+        d["queue_size"] = q["size"] if q else None
+        d["requests_ahead"] = q["ahead"] if q else None
+        d["fcfs_wait_minutes"] = q["wait_minutes"] if q else None
+        result.append(d)
+
+    # Faculty see their pending requests oldest-first (FCFS order).
+    if params.get("faculty_id"):
+        result.sort(key=lambda d: (d["status"] != "Pending",
+                                   d["queue_position"] or 0,
+                                   -d["appointment_id"]))
+    return result
 
 
 def get_availability(params):
@@ -236,6 +283,14 @@ def respond_appointment(data):
             if (row is None or row["faculty_id"] != data.get("faculty_id")
                     or row["status"] != "Pending"):
                 return {"success": False, "message": "Request not found or already handled"}
+
+            # FCFS: only the oldest pending request of this faculty may be answered.
+            if FCFS_STRICT:
+                q = pending_queue(con, row["faculty_id"]).get(row["appointment_id"])
+                if q and q["ahead"]:
+                    return {"success": False,
+                            "message": f"First-come-first-served: {q['ahead']} earlier "
+                                       f"request(s) must be answered first"}
 
             # Confirming a meeting means telling the student where to meet (typed by the faculty).
             venue = ""
