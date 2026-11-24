@@ -21,12 +21,6 @@ from notifications import get_notifications, mark_read
 from calendar_view import get_calendar
 from chat import get_chat_contacts, get_chat_messages, send_chat_message
 from os_engine.fcfs import fcfs
-from os_engine.priority import priority_scheduling
-from os_engine.round_robin import round_robin
-from os_engine.synchronization import try_booking
-from os_engine.deadlock import deadlock_check
-from os_engine.memory import fifo, lru, optimal
-from os_engine.disk import disk_fcfs, sstf, scan
 
 # Local default stays 127.0.0.1:8000; a host (e.g. Render) sets PORT and we listen publicly.
 PORT = int(os.environ.get("PORT") or 8000)
@@ -79,20 +73,6 @@ POST_ROUTES = {
     "/api/admin/faculty-office": set_faculty_office,
 
     "/api/os/fcfs": lambda d: fcfs(d["burst_time"]),
-    "/api/os/priority": lambda d: priority_scheduling(d["burst_time"], d["priority"]),
-    "/api/os/round-robin": lambda d: round_robin(d["burst_time"], d["quantum"]),
-
-    "/api/os/synchronization": lambda d: try_booking(d["slot"]),
-
-    "/api/os/deadlock": lambda d: deadlock_check(d["allocation"], d["request"]),
-
-    "/api/os/memory/fifo": lambda d: fifo(d["pages"], d["frames"]),
-    "/api/os/memory/lru": lambda d: lru(d["pages"], d["frames"]),
-    "/api/os/memory/optimal": lambda d: optimal(d["pages"], d["frames"]),
-
-    "/api/os/disk/fcfs": lambda d: disk_fcfs(d["requests"], d["head"]),
-    "/api/os/disk/sstf": lambda d: sstf(d["requests"], d["head"]),
-    "/api/os/disk/scan": lambda d: scan(d["requests"], d["head"], d["disk_size"]),
 }
 
 DELETE_ROUTES = {
