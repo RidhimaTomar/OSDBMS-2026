@@ -148,7 +148,7 @@ async function notificationsView() {
         <span class="nicon">${icon}</span>
         <span class="ntext">${esc(n.message)}<small>${ago(n.created_at)}</small></span>
         ${n.is_read ? '' : '<span class="dot" aria-label="Unread"></span>'}</button>`; }).join('')
-      || '<p class="muted">No notifications yet. They appear when bookings are made, answered, moved or cancelled.</p>'}
+      || '<p class="muted">No notifications yet.</p>'}
   </div>`;
 }
 
@@ -233,7 +233,7 @@ async function studentView() {
   return `
   <div class="card">
     <h2>Book a meeting with faculty</h2>
-    <p class="muted small">Only times when the faculty has no class and no other meeting on that date are shown. The faculty will confirm the meeting venue.</p>
+    <p class="muted small"></p>
     <div class="grid2">
       <div><label for="fSel">Faculty</label>
         <select id="fSel" data-change="fac">${facs.map(f => `<option value="${f.user_id}" ${String(f.user_id) === ui.fac ? 'selected' : ''}>${esc(f.name)}</option>`).join('')}</select></div>
@@ -337,7 +337,7 @@ async function facultyView() {
     <p class="muted small">Requests are answered first come, first served: the oldest request (#1) must be handled before the next one.</p>
     ${pending.map(row).join('') || '<p class="muted">No pending requests.</p>'}</div>
   <div class="card"><h2>My availability this week</h2>
-    <p class="muted small">Click a <b>Free</b> slot to mark it busy (e.g. “Meeting with HR”), or click a class / busy slot to edit or remove it. Free slots are open for student bookings. Slots with a student meeting are changed from the requests below.</p>
+    <p class="muted small">Click a <b>Free</b></p>
     <div class="scroll"><table><thead><tr><th>Time</th>${DAYS.map(d => `<th>${d}</th>`).join('')}</tr></thead><tbody>
     ${SLOTS.map(t => `<tr><th>${t}</th>${DAYS.map(d => {
       const c = myTT.find(x => x.day === d && x.time_slot === t);
@@ -358,7 +358,7 @@ async function adminView() {
   const semOpts = sel => ['1', '2', '3', '4', '5', '6', '7', '8'].map(s => `<option value="${s}" ${String(sel) === s ? 'selected' : ''}>${s}</option>`).join('');
   return `
   <div class="card"><h2>Add user</h2>
-    <p class="muted small">Create a faculty or student account. Faculty need an office. For students, name, email, course, semester and section are all compulsory.</p>
+    <p class="muted small">Create a faculty or student account.</p>
     <div class="grid2">
       <div><label for="uName">Name</label><input id="uName" type="text"></div>
       <div><label for="uEmail">Email</label><input id="uEmail" type="email"></div>
@@ -473,13 +473,13 @@ async function chatView() {
   const fmt = ts => { const d = new Date(String(ts || '').replace(' ', 'T') + 'Z'); return Number.isNaN(d.getTime()) ? '' : d.toLocaleString([], {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'}); };
   return `
     <div class="card"><h2>💬 Faculty–Student Chat</h2>
-      <p class="muted small">Send messages to discuss appointments, course questions, or meeting details. Keep messages respectful and avoid sharing passwords or sensitive information.</p>
+      <p class="muted small">Send messages to discuss appointments, course questions, or meeting details.</p>
       ${contacts.length ? `
         <label for="chatContact">${me.role === 'Student' ? 'Choose faculty' : 'Choose student'}</label>
         <select id="chatContact" data-change="chatContact">${contacts.map(c => `<option value="${c.user_id}" ${String(c.user_id) === String(ui.chatContact) ? 'selected' : ''}>${esc(c.name)}${c.unread ? ` · ${c.unread} unread` : ''}</option>`).join('')}</select>
         <div class="chat-messages" aria-live="polite">${msgs.map(m => `<div class="chat-line ${Number(m.sender_id) === Number(me.user_id) ? 'mine' : 'theirs'}"><div class="chat-bubble"><p>${esc(m.message)}</p><small>${Number(m.sender_id) === Number(me.user_id) ? 'You' : esc(selected.name)} · ${esc(fmt(m.created_at))}</small></div></div>`).join('') || '<p class="muted">No messages yet. Start the conversation below.</p>'}</div>
         <div class="chat-compose"><label for="chatMessage">Message</label><textarea id="chatMessage" maxlength="2000" placeholder="Write a message…">${esc(ui.chatMessage)}</textarea><div class="actions"><span class="muted small">Up to 2000 characters</span><button class="btn" data-act="sendChat">Send message</button></div></div>
-      ` : '<p class="muted">No contacts available yet. Students can message any faculty member. Faculty contacts appear after a student has an appointment or starts a conversation.</p>'}
+      ` : '<p class="muted">No contacts available yet. </p>'}
     </div>
 `;
 }
