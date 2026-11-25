@@ -8,6 +8,7 @@ const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const qs = o => '?' + new URLSearchParams(o);
 
+// ---- date helpers ----
 const iso = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
 const todayIso = () => iso(new Date());
 const maxDateIso = () => { const d = new Date(); d.setDate(d.getDate() + 60); return iso(d); };
@@ -66,12 +67,14 @@ $('loginForm').onsubmit = async e => {
   $('loginForm').reset(); $('authMsg').textContent = '';
   start();
 };
-$('logoutBtn').onclick = () => {
+const logout = () => {
   sessionStorage.removeItem('campus_user'); me = null;
   clearInterval(pollTimer);
   ui = freshUi();
   $('appView').hidden = true; $('authView').hidden = false; toast('You have been logged out');
 };
+$('logoutBtn').onclick = logout;
+$('logoutTop').onclick = logout;
 
 function start() {
   $('authView').hidden = true; $('appView').hidden = false;
@@ -82,7 +85,7 @@ function start() {
   document.querySelectorAll('.navbtn[data-view]').forEach(b => b.hidden = admin && b.dataset.view !== 'dashboard');
   render();
   clearInterval(pollTimer);
-  if (admin) { setBadge(0); return; }   
+  if (admin) { setBadge(0); return; }   // admin has no notifications
   pollNotifs(true);
   pollTimer = setInterval(() => pollNotifs(false), 10000);
 }
